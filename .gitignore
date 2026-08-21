@@ -1,6 +1,7 @@
 
 data/
 db/
+logs/
 *.csv
 .testmondata
 temp.py

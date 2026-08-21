@@ -16,6 +16,12 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+# Logging: console + daily-rotated file with 7 days retention.
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / "pipeline.log"
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
@@ -25,7 +31,7 @@ SECRET_KEY = "django-insecure-ur*6sc%hl@mei3*gbh%4%3cy!#1@yqi2m^^s$b5x(if(ag4jnt
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["192.168.1.31"]
 
 
 # Application definition
@@ -37,6 +43,8 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "securityinfo",
+    "dailypricehistory",
 ]
 
 MIDDLEWARE = [
@@ -133,5 +141,61 @@ STATIC_URL = "static/"
 MAILERS = {
     "default": {
         "BACKEND": "django.core.mail.backends.console.EmailBackend",
+    },
+}
+
+
+# Logging
+# https://docs.djangoproject.com/en/6.1/topics/logging/
+# App loggers (INFO) go to both console and file; everything else is WARNING+.
+# The file handler rotates at midnight and keeps 7 daily backups.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{asctime} {levelname} {name} {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "{asctime} {levelname} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+        "file": {
+            "class": "logging.handlers.TimedRotatingFileHandler",
+            "filename": LOG_FILE,
+            "when": "midnight",
+            "interval": 1,
+            "backupCount": 7,
+            "encoding": "utf-8",
+            "formatter": "verbose",
+        },
+    },
+    "root": {
+        "handlers": ["console", "file"],
+        "level": "WARNING",
+    },
+    "loggers": {
+        "pipeline": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "dailypricehistory": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "securityinfo": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
     },
 }

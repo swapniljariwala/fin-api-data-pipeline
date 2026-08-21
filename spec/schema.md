@@ -29,8 +29,9 @@ REAL for prices/turnover).
    idempotent (re-import by filename is a no-op).
 6. **Units and dates normalized at ingest**: turnover always in full rupees (legacy
    `TURNOVER_LACS` × 1e5); dates `DD-MMM-YYYY` → ISO; `-` / empty → NULL.
-7. **`avg_price` kept even though derivable** (turnover / volume) to preserve source
-   truth and avoid float drift.
+7. **Columns with no UDiFF value are dropped** — legacy-only fields (`AVG_PRICE`,
+   `DELIV_QTY`, `DELIV_PER`) have no UDiFF equivalent and are not stored; `avg_price`
+   is derivable as turnover / volume when needed.
 8. **`fin_instrm_id` (FinInstrmId) is exchange-specific** (NSE internal code; BSE has its
    own scrip code), so it lives on `instrument_tickers`, not `instruments`.
 9. If a ticker changes (symbol change on a corporate action), **update the ticker in
@@ -157,7 +158,6 @@ CREATE TABLE cm_price_history (
     close                 DECIMAL(18,4),
     last_price            DECIMAL(18,4),
     prev_close            DECIMAL(18,4),
-    avg_price             DECIMAL(18,4),            -- legacy AVG_PRICE; NULL in UDiFF (derivable)
     volume                INTEGER,                  -- TTL_TRD_QNTY / TtlTradgVol
     turnover              DECIMAL(22,2),            -- normalized to full rupees
     num_trades            INTEGER,                  -- NO_OF_TRADES / TtlNbOfTxsExctd
@@ -171,7 +171,8 @@ CREATE INDEX idx_cm_price_ticker ON cm_price_history(instrument_ticker_id);
 ```
 
 Source field mapping: legacy `OPEN_PRICE`→`open`, ... `TURNOVER_LACS`×1e5→`turnover`,
-`DELIV_*` dropped; UDiFF `OpnPric`→`open`, ... `TtlTrfVal`→`turnover` (already rupees).
+`AVG_PRICE`, `DELIV_*` dropped; UDiFF `OpnPric`→`open`, ... `TtlTrfVal`→`turnover`
+(already rupees).
 
 ---
 
