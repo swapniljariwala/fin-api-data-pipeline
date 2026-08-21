@@ -23,6 +23,22 @@ Mode selection (exactly one):
 * ``--upload``: after each successful ingest, upload the bhavcopy to the
   object store (placeholder in ``dailypricehistory.object_store``; logs a
   warning until it is implemented).
+* ``--delay SECONDS``: wait this long between successive NSE API downloads
+  to stay clear of the rate limit (default: 2.0; 0 disables the wait).
+* ``--retries N``: retry a failed download up to N times total, backing off
+  by ``--delay`` between attempts (default: 3). NSE endpoints are flaky and
+  ``jugaad-data`` can crash on a transient timeout, so a retry usually
+  succeeds.
+
+After a download exhausts its retries the command consults NSE's live
+trading-holiday calendar (fetched once per run) to tell apart a market
+holiday (no bhavcopy is expected, logged as INFO) from a genuine download
+failure (logged as WARNING so it stands out). If the holiday API itself is
+unreachable, the failure is reported as an error to be on the safe side.
+
+The downloaded file is deleted from disk once it has been ingested (and
+uploaded, when ``--upload`` is given), so nothing is kept on disk after the
+run; restart-safety comes from the ``bhavcopy_files`` table, not from files.
 
 Progress and errors are logged to console and to ``logs/pipeline.log`` via the
 project-level ``LOGGING`` configuration.
@@ -127,6 +143,22 @@ class Command(BaseCommand):
             help="calendar days to walk back for --latest (default: 30)",
         )
         parser.add_argument(
+            "--delay",
+            type=float,
+            default=2.0,
+            metavar="SECONDS",
+            help="wait this many seconds between NSE API calls "
+            "(default: 2.0; 0 disables)",
+        )
+        parser.add_argument(
+            "--retries",
+            type=int,
+            default=3,
+            metavar="N",
+            help="retry a failed download up to N times total, "
+            "backing off by --delay between attempts (default: 3)",
+        )
+        parser.add_argument(
             "--upload",
             action="store_true",
             help="upload each ingested bhavcopy to the object store after "
@@ -138,6 +170,17 @@ class Command(BaseCommand):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.no_download = options["no_download"]
         self.upload = options["upload"]
+        self.delay = options["delay"]
+        if self.delay < 0:
+            raise CommandError(
+                "--delay must be zero or a positive number of seconds"
+            )
+        self.retries = options["retries"]
+        if self.retries < 1:
+            raise CommandError("--retries must be at least 1")
+        self._api_calls = 0
+        self._download_ok = True
+        self._holiday_dates = None  # lazy set of NSE CM trading holidays
         self.archives = None
         if not self.no_download:
             from jugaad_data.nse.archives import NSEArchives
@@ -205,6 +248,7 @@ class Command(BaseCommand):
                 continue
             if self._already_ingested(day):
                 continue
+            self._download_ok = True
             path = self._obtain_file(day)
             if path is None:
                 continue
@@ -226,9 +270,13 @@ class Command(BaseCommand):
                 summary["skipped"] += 1
                 continue
             try:
+                self._download_ok = True
                 path = self._obtain_file(day)
                 if path is None:
-                    logger.info("%s: no bhavcopy available (holiday?)", day)
+                    if self._download_ok:
+                        logger.info(
+                            "%s: no bhavcopy available (holiday?)", day
+                        )
                     continue
                 self._ingest_and_upload(path, day)
                 summary["ingested"] += 1
@@ -263,15 +311,35 @@ class Command(BaseCommand):
         path = self.data_dir / self._file_name(day)
         if self.no_download:
             return path if path.is_file() else None
-        try:
-            saved = self.archives.bhavcopy_save(
-                day, str(self.data_dir), skip_if_present=True
-            )
-        except Exception as exc:
-            logger.warning("%s: download failed (%s)", day, exc)
-            return None
+        for attempt in range(1, self.retries + 1):
+            self._throttle()
+            try:
+                saved = self.archives.bhavcopy_save(
+                    day, str(self.data_dir), skip_if_present=True
+                )
+                break
+            except Exception as exc:
+                if attempt < self.retries:
+                    logger.warning(
+                        "%s: download attempt %d/%d failed (%s), retrying",
+                        day, attempt, self.retries, exc,
+                    )
+                    continue
+                self._download_ok = False
+                if self._is_nse_holiday(day):
+                    logger.info(
+                        "%s: NSE trading holiday, no bhavcopy expected", day
+                    )
+                    return None
+                logger.warning(
+                    "%s: download failed after %d attempt(s) (%s); "
+                    "not an NSE holiday",
+                    day, attempt, exc,
+                )
+                return None
         path = Path(saved)
         if not path.is_file():
+            self._download_ok = False
             return None
         if not self._looks_like_bhavcopy(path):
             # Likely an error page saved by a failed download; drop it so the
@@ -280,8 +348,50 @@ class Command(BaseCommand):
                 "%s: downloaded file is not a valid bhavcopy, discarding", day
             )
             path.unlink(missing_ok=True)
+            self._download_ok = False
             return None
         return path
+
+    def _is_nse_holiday(self, day):
+        """Whether ``day`` is a declared NSE CM trading holiday.
+
+        The holiday calendar is fetched once per run, lazily, from NSE's live
+        holiday-master API. If the API is unreachable we log a warning and
+        return False so the failure is treated as a genuine download error.
+        """
+        if self._holiday_dates is None:
+            self._holiday_dates = set()
+            self._throttle()
+            try:
+                from jugaad_data.nse.live import NSELive
+
+                data = NSELive().holiday_list()
+            except Exception as exc:
+                logger.warning(
+                    "Could not fetch NSE holiday calendar (%s); treating "
+                    "failed downloads as errors",
+                    exc,
+                )
+                return False
+            for holiday in data.get("CM", []):
+                raw = holiday.get("tradingDate")
+                try:
+                    hday = datetime.strptime(
+                        raw, "%d-%b-%Y"
+                    ).date()
+                except (TypeError, ValueError):
+                    continue
+                self._holiday_dates.add(hday)
+        return day in self._holiday_dates
+
+    def _throttle(self):
+        """Sleep before NSE API calls after the first one in a run."""
+        if self._api_calls > 0 and self.delay > 0:
+            logger.info(
+                "Waiting %.1fs before next NSE API call", self.delay
+            )
+            time.sleep(self.delay)
+        self._api_calls += 1
 
     def _looks_like_bhavcopy(self, path):
         try:
@@ -376,19 +486,20 @@ class Command(BaseCommand):
     # --------------------------------------------------------------- ingesting
 
     def _ingest_and_upload(self, path, day):
-        """Ingest one file, then optionally upload it to the object store."""
+        """Ingest one file, optionally upload it, then delete it from disk."""
         self._ingest_file(path, day)
-        if not self.upload:
-            return
-        try:
-            upload_bhavcopy_to_object_store(str(path))
-        except NotImplementedError as exc:
-            logger.warning(
-                "%s: object store upload not implemented yet, skipped (%s)",
-                path.name, exc,
-            )
-        else:
-            logger.info("%s: uploaded to object store", path.name)
+        if self.upload:
+            try:
+                upload_bhavcopy_to_object_store(str(path))
+            except NotImplementedError as exc:
+                logger.warning(
+                    "%s: object store upload not implemented yet, skipped (%s)",
+                    path.name, exc,
+                )
+            else:
+                logger.info("%s: uploaded to object store", path.name)
+        path.unlink(missing_ok=True)
+        logger.info("%s: removed from disk", path.name)
 
     def _ingest_file(self, path, trade_date):
         fmt = self._detect_format(path)
