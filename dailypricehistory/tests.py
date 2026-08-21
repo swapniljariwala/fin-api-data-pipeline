@@ -157,8 +157,11 @@ class IngestBhavcopyTests(TestCase):
         with mock.patch(
             "jugaad_data.nse.archives.NSEArchives"
         ) as archives_cls, mock.patch(
+            "jugaad_data.nse.live.NSELive"
+        ) as live_cls, mock.patch(
             "dailypricehistory.management.commands.ingest_bhavcopy.time.sleep"
         ) as sleep:
+            live_cls.return_value.holiday_list.return_value = {"CM": []}
             archives_cls.return_value.bhavcopy_save.side_effect = fake_save
             _run(
                 from_date="2026-08-19",
@@ -167,8 +170,10 @@ class IngestBhavcopyTests(TestCase):
                 delay=1.5,
             )
 
-        # Two downloads, so exactly one wait between them.
-        sleep.assert_called_once_with(1.5)
+        # One wait before each of the two downloads (the holiday check on
+        # the first day is itself an API call but sleeps before nothing).
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_any_call(1.5)
 
     def test_download_retries_after_transient_failure(self):
         base = Path(tempfile.mkdtemp())
@@ -300,4 +305,122 @@ class IngestBhavcopyTests(TestCase):
         self.assertTrue(
             any("not an NSE holiday" in m for m in messages),
             f"expected error classification, got {messages!r}",
+        )
+
+    def test_known_holiday_not_downloaded(self):
+        # A date the live holiday API reports must not be downloaded at all.
+        base = Path(tempfile.mkdtemp())
+        holidays = {"CM": [{"tradingDate": "20-Aug-2026"}]}
+        with mock.patch(
+            "jugaad_data.nse.archives.NSEArchives"
+        ) as archives_cls, mock.patch(
+            "jugaad_data.nse.live.NSELive"
+        ) as live_cls, mock.patch(
+            "dailypricehistory.management.commands.ingest_bhavcopy.time.sleep"
+        ):
+            live_cls.return_value.holiday_list.return_value = holidays
+            _run(
+                from_date="2026-08-20",
+                to_date="2026-08-20",
+                data_dir=str(base),
+            )
+        archives_cls.return_value.bhavcopy_save.assert_not_called()
+        self.assertFalse(
+            BhavcopyFile.objects.filter(trade_date="2026-08-20").exists()
+        )
+
+    def test_local_calendar_skips_historic_holiday(self):
+        # 2025-10-02 is in jugaad's shipped calendar but not the live API
+        # (which only covers the current year); it must still be skipped.
+        base = Path(tempfile.mkdtemp())
+        with mock.patch(
+            "jugaad_data.nse.archives.NSEArchives"
+        ) as archives_cls, mock.patch(
+            "jugaad_data.nse.live.NSELive"
+        ), mock.patch(
+            "dailypricehistory.management.commands.ingest_bhavcopy.time.sleep"
+        ):
+            _run(
+                from_date="2025-10-02",
+                to_date="2025-10-02",
+                data_dir=str(base),
+            )
+        archives_cls.return_value.bhavcopy_save.assert_not_called()
+
+    def test_date_taken_from_file_not_filename(self):
+        # NSE can serve the previous day's file for a date with no bhavcopy;
+        # rows must be stored under the embedded date, not the filename's.
+        tmp = Path(tempfile.mkdtemp())
+        shutil.copy(
+            SAMPLE_DIR / "cm05Jul2024bhav.csv",
+            tmp / "cm08Jul2024bhav.csv",
+        )
+        _run(
+            from_date="2024-07-08",
+            to_date="2024-07-08",
+            data_dir=str(tmp),
+            no_download=True,
+        )
+
+        bf = BhavcopyFile.objects.get()
+        self.assertEqual(bf.file_name, "cm08Jul2024bhav.csv")
+        self.assertEqual(bf.trade_date.isoformat(), "2024-07-05")
+        self.assertEqual(
+            list(
+                CmPriceHistory.objects.values_list(
+                    "trade_date", flat=True
+                ).distinct()
+            ),
+            [bf.trade_date],
+        )
+
+    def test_purge_duplicate_bhavcopies(self):
+        data_dir = self._copy_sample("cm05Jul2024bhav.csv")
+        _run(
+            from_date="2024-07-05",
+            to_date="2024-07-05",
+            data_dir=data_dir,
+            no_download=True,
+        )
+        real = BhavcopyFile.objects.get()
+        real_rows = list(CmPriceHistory.objects.filter(file=real))
+        bogus = BhavcopyFile.objects.create(
+            file_name="cm06Jul2024bhav.csv",
+            source="NSE",
+            segment="CM",
+            format="legacy",
+            trade_date="2024-07-06",
+            row_count=len(real_rows),
+        )
+        for r in real_rows:
+            CmPriceHistory.objects.create(
+                instrument_ticker=r.instrument_ticker,
+                trade_date="2024-07-06",
+                series=r.series,
+                open=r.open,
+                high=r.high,
+                low=r.low,
+                close=r.close,
+                last_price=r.last_price,
+                prev_close=r.prev_close,
+                volume=r.volume,
+                turnover=r.turnover,
+                num_trades=r.num_trades,
+                settlement_price=r.settlement_price,
+                file=bogus,
+            )
+
+        # Dry run flags the bogus file without touching anything.
+        call_command("purge_duplicate_bhavcopies", verbosity=0)
+        self.assertTrue(BhavcopyFile.objects.filter(id=bogus.id).exists())
+
+        call_command("purge_duplicate_bhavcopies", apply=True, verbosity=0)
+        self.assertFalse(BhavcopyFile.objects.filter(id=bogus.id).exists())
+        self.assertTrue(BhavcopyFile.objects.filter(id=real.id).exists())
+        self.assertFalse(
+            CmPriceHistory.objects.filter(trade_date="2024-07-06").exists()
+        )
+        self.assertEqual(
+            CmPriceHistory.objects.filter(trade_date="2024-07-05").count(),
+            len(real_rows),
         )

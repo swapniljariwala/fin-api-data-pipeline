@@ -55,6 +55,17 @@ python manage.py ingest_bhavcopy [--latest | --from YYYY-MM-DD | --days N]
 | `--lookback N` | How far back `--latest` searches. Default 30. |
 | `--upload` | Call the object-store upload hook after each successful ingest (stub; logs a warning until implemented). |
 
+Data repair (safe; dry run unless `--apply`):
+
+```
+python manage.py purge_duplicate_bhavcopies [--apply]
+```
+
+Flags bhavcopy files whose rows duplicate the previous trading day (the
+signature of NSE serving the previous day's bhavcopy for a holiday date
+under older code) and, with `--apply`, deletes them and their price rows.
+Keeps real data such as Diwali muhurat sessions.
+
 Examples:
 
 ```bash
@@ -75,6 +86,12 @@ Guarantees:
   `ignore_conflicts` on insert.
 - Both bhavcopy formats supported (legacy pre-8-Jul-2024 and UDiFF); the format
   is sniffed from the file header, not assumed from the date.
+- Known NSE holidays are skipped before any download (local all-year calendar
+  from `jugaad-data` plus NSE's live holiday API for the current year), so
+  holiday dates are never downloaded in the first place.
+- The trade date is taken from the file content (`DATE1`/`TradDt`), not the
+  filename: if NSE serves the previous day's file for a date with no bhavcopy,
+  the rows land under their real date and dedupe against the actual day.
 - Progress (INFO) and failures (ERROR with traceback) go to console and
   `logs/pipeline.log`; failures exit non-zero.
 

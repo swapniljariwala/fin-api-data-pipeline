@@ -30,11 +30,18 @@ Mode selection (exactly one):
   ``jugaad-data`` can crash on a transient timeout, so a retry usually
   succeeds.
 
-After a download exhausts its retries the command consults NSE's live
-trading-holiday calendar (fetched once per run) to tell apart a market
-holiday (no bhavcopy is expected, logged as INFO) from a genuine download
-failure (logged as WARNING so it stands out). If the holiday API itself is
-unreachable, the failure is reported as an error to be on the safe side.
+Known NSE trading holidays (from the local calendar shipped with
+``jugaad-data``, covering all years, plus NSE's live holiday API for the
+current year) are skipped before any download is attempted. If a download
+still yields no file - a closure the calendars do not know, or NSE serving
+an error page - the day is logged as a holiday or a genuine download
+failure respectively, not as an ingestion error.
+
+The trade date is taken from the file content, not the filename: NSE's
+archive server can serve the most recent available bhavcopy for a date
+that has none, and storing those rows under the embedded date keeps the
+data honest (any overlap with the real day is deduped by the uniqueness
+key).
 
 The downloaded file is deleted from disk once it has been ingested (and
 uploaded, when ``--upload`` is given), so nothing is kept on disk after the
@@ -94,6 +101,29 @@ def _dec(value):
 def _int(value):
     value = _clean(value)
     return int(value) if value is not None else None
+
+
+_LOCAL_HOLIDAYS = None
+
+
+def _local_nse_holidays():
+    """NSE CM holidays from the calendar shipped with ``jugaad-data``.
+
+    Covers all years, so it is authoritative for historical backfills where
+    NSE's live holiday API has no data. Parsed once per process.
+    """
+    global _LOCAL_HOLIDAYS
+    if _LOCAL_HOLIDAYS is None:
+        from jugaad_data.holidays import holidays_str
+
+        parsed = set()
+        for raw in holidays_str:
+            try:
+                parsed.add(datetime.strptime(raw, "%Y-%m-%d").date())
+            except ValueError:
+                continue
+        _LOCAL_HOLIDAYS = parsed
+    return _LOCAL_HOLIDAYS
 
 
 class Command(BaseCommand):
@@ -248,6 +278,11 @@ class Command(BaseCommand):
                 continue
             if self._already_ingested(day):
                 continue
+            if not self.no_download and self._is_nse_holiday(day):
+                logger.info(
+                    "%s: NSE trading holiday, skipping download", day
+                )
+                continue
             self._download_ok = True
             path = self._obtain_file(day)
             if path is None:
@@ -267,6 +302,12 @@ class Command(BaseCommand):
         for day in targets:
             if self._already_ingested(day):
                 logger.info("%s: already ingested, skipping", day)
+                summary["skipped"] += 1
+                continue
+            if not self.no_download and self._is_nse_holiday(day):
+                logger.info(
+                    "%s: NSE trading holiday, skipping download", day
+                )
                 summary["skipped"] += 1
                 continue
             try:
@@ -344,21 +385,34 @@ class Command(BaseCommand):
         if not self._looks_like_bhavcopy(path):
             # Likely an error page saved by a failed download; drop it so the
             # next run re-downloads instead of ingesting garbage.
-            logger.warning(
-                "%s: downloaded file is not a valid bhavcopy, discarding", day
-            )
             path.unlink(missing_ok=True)
             self._download_ok = False
+            if self._is_nse_holiday(day):
+                logger.info(
+                    "%s: discarded invalid download on an NSE holiday", day
+                )
+            else:
+                logger.warning(
+                    "%s: downloaded file is not a valid bhavcopy, "
+                    "discarding",
+                    day,
+                )
             return None
         return path
 
     def _is_nse_holiday(self, day):
         """Whether ``day`` is a declared NSE CM trading holiday.
 
-        The holiday calendar is fetched once per run, lazily, from NSE's live
-        holiday-master API. If the API is unreachable we log a warning and
-        return False so the failure is treated as a genuine download error.
+        Two sources, checked in order:
+        * The local calendar shipped with ``jugaad-data``, which covers all
+          years and is therefore authoritative for historical backfills.
+        * NSE's live holiday-master API (fetched once per run), which covers
+          the currently published year including one-off closures. If the API
+          is unreachable or malformed we log a warning and fall through, so
+          an unknown day is treated as a genuine trading day.
         """
+        if day in _local_nse_holidays():
+            return True
         if self._holiday_dates is None:
             self._holiday_dates = set()
             self._throttle()
@@ -366,6 +420,15 @@ class Command(BaseCommand):
                 from jugaad_data.nse.live import NSELive
 
                 data = NSELive().holiday_list()
+                for holiday in data.get("CM", []):
+                    raw = holiday.get("tradingDate")
+                    try:
+                        hday = datetime.strptime(
+                            raw, "%d-%b-%Y"
+                        ).date()
+                    except (TypeError, ValueError):
+                        continue
+                    self._holiday_dates.add(hday)
             except Exception as exc:
                 logger.warning(
                     "Could not fetch NSE holiday calendar (%s); treating "
@@ -373,15 +436,6 @@ class Command(BaseCommand):
                     exc,
                 )
                 return False
-            for holiday in data.get("CM", []):
-                raw = holiday.get("tradingDate")
-                try:
-                    hday = datetime.strptime(
-                        raw, "%d-%b-%Y"
-                    ).date()
-                except (TypeError, ValueError):
-                    continue
-                self._holiday_dates.add(hday)
         return day in self._holiday_dates
 
     def _throttle(self):
@@ -403,7 +457,15 @@ class Command(BaseCommand):
 
     # ---------------------------------------------------------------- parsing
 
-    def _validate_csv_date(self, raw, expected, fmt):
+    def _file_date(self, raw, expected, fmt, name):
+        """The trade date embedded in the file, not the filename.
+
+        NSE's archive server serves the most recent available bhavcopy for a
+        date that has none (holidays, closures), so a file can hold the
+        previous trading day's rows. The embedded date is authoritative: rows
+        are stored under it, where the uniqueness key makes any duplicate of
+        the real day a no-op.
+        """
         value = _clean(raw)
         try:
             if fmt == "legacy":
@@ -411,11 +473,18 @@ class Command(BaseCommand):
             else:
                 parsed = date.fromisoformat(value)
         except (ValueError, TypeError):
-            parsed = expected
+            logger.warning(
+                "%s: no trade date in file; assuming %s from the filename",
+                name, expected,
+            )
+            return expected
         if parsed != expected:
             logger.warning(
-                "CSV trade date %s != expected %s", parsed, expected
+                "%s: file holds %s data, not %s; storing under the "
+                "file's date",
+                name, parsed, expected,
             )
+        return parsed
 
     def _parse_rows(self, path, fmt, expected_date):
         rows = []
@@ -423,19 +492,19 @@ class Command(BaseCommand):
             reader = csv.DictReader(fh, skipinitialspace=True)
             first = next(reader, None)
             if first is None:
-                return rows
+                return rows, expected_date
             date_col = "DATE1" if fmt == "legacy" else "TradDt"
-            self._validate_csv_date(
-                first.get(date_col), expected_date, fmt
+            trade_date = self._file_date(
+                first.get(date_col), expected_date, fmt, path.name
             )
             for raw in [first, *reader]:
                 if fmt == "legacy":
-                    row = self._parse_legacy_row(raw, expected_date)
+                    row = self._parse_legacy_row(raw, trade_date)
                 else:
-                    row = self._parse_udiff_row(raw, expected_date)
+                    row = self._parse_udiff_row(raw, trade_date)
                 if row is not None:
                     rows.append(row)
-        return rows
+        return rows, trade_date
 
     def _parse_legacy_row(self, raw, expected_date):
         return {
@@ -508,14 +577,14 @@ class Command(BaseCommand):
             path.name, fmt, trade_date,
         )
         with transaction.atomic():
+            rows, file_date = self._parse_rows(path, fmt, trade_date)
             file_obj = BhavcopyFile.objects.create(
                 file_name=path.name,
                 source=SOURCE,
                 segment=SEGMENT,
                 format=fmt,
-                trade_date=trade_date,
+                trade_date=file_date,
             )
-            rows = self._parse_rows(path, fmt, trade_date)
             self._series_cache = {}
             self._instruments_by_isin = {}
             self._tickers = {}
