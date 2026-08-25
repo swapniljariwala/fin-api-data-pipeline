@@ -41,24 +41,23 @@ class IngestBhavcopyTests(TestCase):
         self.assertEqual(bf.row_count, CmPriceHistory.objects.count())
         self.assertGreater(bf.row_count, 0)
 
-        # A known row: 20MICRONS, EQ series.
+        # A known row: 20MICRONS, EQ series (primary series → no suffix).
         ticker = InstrumentTicker.objects.get(source="NSE", ticker="20MICRONS")
+        self.assertEqual(ticker.instrument.isin, "INE144J01027")
         row = CmPriceHistory.objects.get(
             instrument_ticker=ticker, series__code="EQ"
         )
         self.assertEqual(row.open, Decimal("227.0000"))
         self.assertEqual(row.close, Decimal("224.7200"))
-        # TURNOVER_LACS 452.23 -> full rupees.
-        self.assertEqual(row.turnover, Decimal("45223000.00"))
+        # TOTTRDVAL is already in full rupees (not lakhs).
+        self.assertEqual(row.turnover, Decimal("45223088.56"))
         self.assertEqual(row.volume, 201028)
-        # Legacy rows carry no ISIN.
-        self.assertIsNone(ticker.instrument.isin)
 
     def test_ingest_udiff_file(self):
-        data_dir = self._copy_sample("cm20Aug2026bhav.csv")
+        data_dir = self._copy_sample("cm24Aug2026bhav.csv")
         _run(
-            from_date="2026-08-20",
-            to_date="2026-08-20",
+            from_date="2026-08-24",
+            to_date="2026-08-24",
             data_dir=data_dir,
             no_download=True,
         )
@@ -69,12 +68,18 @@ class IngestBhavcopyTests(TestCase):
         self.assertGreater(bf.row_count, 0)
 
         # UDiFF populates ISIN, name and the exchange instrument id.
+        # SGBJUN28 is GB series (non-primary) → ticker becomes SGBJUN28-GB.
         instrument = Instrument.objects.get(isin="IN0020200104")
         self.assertEqual(instrument.name, "2.5%GOLDBONDS2028SR-III")
         ticker = InstrumentTicker.objects.get(
-            instrument=instrument, source="NSE", ticker="SGBJUN28"
+            instrument=instrument, source="NSE", ticker="SGBJUN28-GB"
         )
         self.assertEqual(ticker.fin_instrm_id, 19078)
+        # 20MICRONS is EQ series (primary) → no suffix.
+        instrument = Instrument.objects.get(isin="INE144J01027")
+        ticker = InstrumentTicker.objects.get(
+            instrument=instrument, source="NSE", ticker="20MICRONS"
+        )
 
     def test_rerun_is_a_noop(self):
         data_dir = self._copy_sample("cm05Jul2024bhav.csv")
@@ -92,18 +97,18 @@ class IngestBhavcopyTests(TestCase):
         self.assertEqual(CmPriceHistory.objects.count(), first_count)
 
     def test_days_mode(self):
-        # Sample file is from 2026-08-20; today in test env is 2026-08-21.
-        data_dir = self._copy_sample("cm20Aug2026bhav.csv")
+        # Sample file is cm24Aug2026bhav.csv with embedded trade_date 2026-08-24.
+        data_dir = self._copy_sample("cm24Aug2026bhav.csv")
         _run(days=2, data_dir=data_dir, no_download=True)
         self.assertTrue(
-            BhavcopyFile.objects.filter(trade_date="2026-08-20").exists()
+            BhavcopyFile.objects.filter(trade_date="2026-08-24").exists()
         )
 
     def test_latest_no_download(self):
-        data_dir = self._copy_sample("cm20Aug2026bhav.csv")
+        data_dir = self._copy_sample("cm24Aug2026bhav.csv")
         _run(latest=True, data_dir=data_dir, no_download=True)
         self.assertTrue(
-            BhavcopyFile.objects.filter(trade_date="2026-08-20").exists()
+            BhavcopyFile.objects.filter(trade_date="2026-08-24").exists()
         )
 
     def test_missing_file_reports_no_data(self):
@@ -129,18 +134,18 @@ class IngestBhavcopyTests(TestCase):
         self.assertTrue(Series.objects.filter(code="GS").exists())
 
     def test_file_deleted_after_ingest(self):
-        data_dir = self._copy_sample("cm20Aug2026bhav.csv")
+        data_dir = self._copy_sample("cm24Aug2026bhav.csv")
         _run(
-            from_date="2026-08-20",
-            to_date="2026-08-20",
+            from_date="2026-08-24",
+            to_date="2026-08-24",
             data_dir=data_dir,
             no_download=True,
         )
         self.assertTrue(
-            BhavcopyFile.objects.filter(trade_date="2026-08-20").exists()
+            BhavcopyFile.objects.filter(trade_date="2026-08-24").exists()
         )
         self.assertFalse(
-            Path(data_dir, "cm20Aug2026bhav.csv").exists(),
+            Path(data_dir, "cm24Aug2026bhav.csv").exists(),
             "bhavcopy file should be removed after ingestion",
         )
 
@@ -151,7 +156,7 @@ class IngestBhavcopyTests(TestCase):
             name = f"cm{day:%d%b%Y}bhav.csv"
             target = base / name
             if not target.is_file():
-                shutil.copy(SAMPLE_DIR / "cm20Aug2026bhav.csv", target)
+                shutil.copy(SAMPLE_DIR / "cm24Aug2026bhav.csv", target)
             return str(target)
 
         with mock.patch(
@@ -164,8 +169,8 @@ class IngestBhavcopyTests(TestCase):
             live_cls.return_value.holiday_list.return_value = {"CM": []}
             archives_cls.return_value.bhavcopy_save.side_effect = fake_save
             _run(
-                from_date="2026-08-19",
-                to_date="2026-08-20",
+                from_date="2026-08-21",
+                to_date="2026-08-24",
                 data_dir=str(base),
                 delay=1.5,
             )
@@ -189,7 +194,7 @@ class IngestBhavcopyTests(TestCase):
             name = f"cm{day:%d%b%Y}bhav.csv"
             target = base / name
             if not target.is_file():
-                shutil.copy(SAMPLE_DIR / "cm20Aug2026bhav.csv", target)
+                shutil.copy(SAMPLE_DIR / "cm24Aug2026bhav.csv", target)
             return str(target)
 
         with mock.patch(
@@ -201,15 +206,15 @@ class IngestBhavcopyTests(TestCase):
         ):
             archives_cls.return_value.bhavcopy_save.side_effect = flaky_save
             _run(
-                from_date="2026-08-20",
-                to_date="2026-08-20",
+                from_date="2026-08-24",
+                to_date="2026-08-24",
                 data_dir=str(base),
                 retries=3,
             )
 
         self.assertEqual(calls["n"], 2, "first attempt fails, second succeeds")
         self.assertTrue(
-            BhavcopyFile.objects.filter(trade_date="2026-08-20").exists()
+            BhavcopyFile.objects.filter(trade_date="2026-08-24").exists()
         )
 
     def test_download_gives_up_after_all_retries(self):

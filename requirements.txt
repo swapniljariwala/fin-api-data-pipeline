@@ -1,5 +1,5 @@
 django
-jugaad-data==0.35.3
+jugaad-data
 python-dotenv
 
 

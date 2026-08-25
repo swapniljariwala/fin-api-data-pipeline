@@ -18,8 +18,8 @@ Mode selection (exactly one):
 
 * ``--latest``: most recent bhavcopy not yet ingested (walks back from today).
 * ``--from YYYY-MM-DD --to YYYY-MM-DD``: inclusive date range, fetched
-  newest-first.
-* ``--days N``: last N calendar days ending today, fetched newest-first.
+  oldest-first.
+* ``--days N``: last N calendar days ending today, fetched oldest-first.
 * ``--upload``: after each successful ingest, upload the bhavcopy to the
   object store (placeholder in ``dailypricehistory.object_store``; logs a
   warning until it is implemented).
@@ -68,6 +68,8 @@ from securityinfo.models import Instrument, InstrumentTicker, Series
 
 SOURCE = "NSE"
 SEGMENT = "CM"
+
+_PRIMARY_SERIES = frozenset({"EQ", "SM"})
 
 logger = logging.getLogger(__name__)
 
@@ -262,9 +264,9 @@ class Command(BaseCommand):
         return self._target_dates(from_date, to_date)
 
     def _target_dates(self, from_date, to_date):
-        # Newest first: most recent data lands in the DB first, and if the
-        # run is interrupted the remaining dates are the older ones.
-        return list(self._iter_weekdays(from_date, to_date))[::-1]
+        # Oldest first: chronological order matches the sequence in which
+        # data is written to the DB.
+        return list(self._iter_weekdays(from_date, to_date))
 
     def _run_latest(self, lookback):
         logger.info(
@@ -297,7 +299,7 @@ class Command(BaseCommand):
     def _run_dates(self, targets):
         summary = {"ingested": 0, "skipped": 0, "failed": 0}
         logger.info(
-            "Processing %d trading day(s), newest first", len(targets)
+            "Processing %d trading day(s), oldest first", len(targets)
         )
         for day in targets:
             if self._already_ingested(day):
@@ -493,7 +495,10 @@ class Command(BaseCommand):
             first = next(reader, None)
             if first is None:
                 return rows, expected_date
-            date_col = "DATE1" if fmt == "legacy" else "TradDt"
+            if fmt == "legacy":
+                date_col = "DATE1" if "DATE1" in reader.fieldnames else "TIMESTAMP"
+            else:
+                date_col = "TradDt"
             trade_date = self._file_date(
                 first.get(date_col), expected_date, fmt, path.name
             )
@@ -507,35 +512,46 @@ class Command(BaseCommand):
         return rows, trade_date
 
     def _parse_legacy_row(self, raw, expected_date):
+        series = (raw.get("SERIES") or "").strip()
         return {
-            "ticker": (raw.get("SYMBOL") or "").strip(),
-            "series": (raw.get("SERIES") or "").strip(),
+            "ticker": self._disambiguate_ticker(
+                (raw.get("SYMBOL") or "").strip(), series
+            ),
+            "series": series,
             "trade_date": expected_date,
-            "isin": None,
-            "name": None,
-            "fin_instrm_id": None,
-            "open": _dec(raw.get("OPEN_PRICE")),
-            "high": _dec(raw.get("HIGH_PRICE")),
-            "low": _dec(raw.get("LOW_PRICE")),
-            "close": _dec(raw.get("CLOSE_PRICE")),
-            "last_price": _dec(raw.get("LAST_PRICE")),
-            "prev_close": _dec(raw.get("PREV_CLOSE")),
-            "volume": _int(raw.get("TTL_TRD_QNTY")),
-            "turnover": self._legacy_turnover(raw.get("TURNOVER_LACS")),
-            "num_trades": _int(raw.get("NO_OF_TRADES")),
+            "isin": _clean(raw.get("ISIN")),
+            "name": _clean(raw.get("FinInstrmNm")),
+            "fin_instrm_id": _int(raw.get("FinInstrmId")),
+            "open": _dec(raw.get("OPEN_PRICE") or raw.get("OPEN")),
+            "high": _dec(raw.get("HIGH_PRICE") or raw.get("HIGH")),
+            "low": _dec(raw.get("LOW_PRICE") or raw.get("LOW")),
+            "close": _dec(raw.get("CLOSE_PRICE") or raw.get("CLOSE")),
+            "last_price": _dec(raw.get("LAST_PRICE") or raw.get("LAST")),
+            "prev_close": _dec(raw.get("PREV_CLOSE") or raw.get("PREVCLOSE")),
+            "volume": _int(raw.get("TTL_TRD_QNTY") or raw.get("TOTTRDQTY")),
+            "turnover": self._legacy_turnover(
+                raw.get("TOTTRDVAL") or raw.get("TURNOVER_LACS"),
+                is_full_rupees="TOTTRDVAL" in raw,
+            ),
+            "num_trades": _int(raw.get("NO_OF_TRADES") or raw.get("TOTALTRADES")),
             "settlement_price": None,
         }
 
-    def _legacy_turnover(self, raw):
-        value = _dec(raw)  # lakhs
-        return value * Decimal("100000") if value is not None else None
+    def _legacy_turnover(self, raw, is_full_rupees=False):
+        value = _dec(raw)
+        if value is None:
+            return None
+        return value if is_full_rupees else value * Decimal("100000")
 
     def _parse_udiff_row(self, raw, expected_date):
         if (raw.get("FinInstrmTp") or "STK") != "STK":
             return None  # guard: only STK instruments are ingested
+        series = (raw.get("SctySrs") or "").strip()
         return {
-            "ticker": (raw.get("TckrSymb") or "").strip(),
-            "series": (raw.get("SctySrs") or "").strip(),
+            "ticker": self._disambiguate_ticker(
+                (raw.get("TckrSymb") or "").strip(), series
+            ),
+            "series": series,
             "trade_date": expected_date,
             "isin": _clean(raw.get("ISIN")),
             "name": _clean(raw.get("FinInstrmNm")),
@@ -551,6 +567,12 @@ class Command(BaseCommand):
             "num_trades": _int(raw.get("TtlNbOfTxsExctd")),
             "settlement_price": _dec(raw.get("SttlmPric")),
         }
+
+    @staticmethod
+    def _disambiguate_ticker(ticker, series):
+        if series not in _PRIMARY_SERIES:
+            return f"{ticker}-{series}" if ticker else ticker
+        return ticker
 
     # --------------------------------------------------------------- ingesting
 
@@ -587,7 +609,6 @@ class Command(BaseCommand):
             )
             self._series_cache = {}
             self._instruments_by_isin = {}
-            self._tickers = {}
             price_rows = []
             for row in rows:
                 ticker = self._resolve_ticker(
@@ -663,47 +684,84 @@ class Command(BaseCommand):
         return instrument
 
     def _resolve_ticker(self, ticker, isin=None, name=None, fin_id=None):
-        key = (SOURCE, ticker)
-        cached = self._tickers.get(key)
-        if cached is not None:
-            return cached
+        link = InstrumentTicker.objects.filter(
+            source=SOURCE, ticker=ticker
+        ).select_related("instrument").first()
 
-        try:
-            obj = InstrumentTicker.objects.get(source=SOURCE, ticker=ticker)
-        except InstrumentTicker.DoesNotExist:
-            obj = None
+        if link is not None:
+            link = self._maybe_upgrade_link(link, ticker, isin, name, fin_id)
+            return link
 
-        if obj is None:
-            if isin:
-                instrument = self._resolve_instrument_by_isin(isin, name)
-            else:
-                # Legacy rows have no ISIN: identity falls back to
-                # (source, ticker); the instrument stays ISIN-less until a
-                # later UDiFF row upgrades it.
-                instrument, _ = Instrument.objects.get_or_create(
-                    isin=None,
-                    name=ticker or "",
-                    defaults={"instrument_type": "STK"},
-                )
-            obj = InstrumentTicker.objects.create(
+        if not isin:
+            instrument, _ = Instrument.objects.get_or_create(
+                isin=None,
+                name=ticker or "",
+                defaults={"instrument_type": "STK"},
+            )
+            return InstrumentTicker.objects.create(
                 instrument=instrument,
                 source=SOURCE,
                 ticker=ticker,
                 fin_instrm_id=fin_id,
             )
-        else:
-            # A UDiFF row upgrades an ISIN-less instrument created earlier.
-            if isin:
-                instrument = self._resolve_instrument_by_isin(isin, name)
-                if obj.instrument_id != instrument.id:
-                    obj.instrument = instrument
-                    obj.save(update_fields=["instrument"])
-            if fin_id and obj.fin_instrm_id != fin_id:
-                obj.fin_instrm_id = fin_id
-                obj.save(update_fields=["fin_instrm_id"])
 
-        self._tickers[key] = obj
-        return obj
+        # (source, ticker) not found but we have ISIN: check for a symbol
+        # change — same instrument already linked under a different ticker.
+        instrument = self._resolve_instrument_by_isin(isin, name)
+        existing = InstrumentTicker.objects.filter(
+            instrument=instrument, source=SOURCE
+        ).first()
+        if existing is not None:
+            if existing.ticker != ticker:
+                conflicting = InstrumentTicker.objects.filter(
+                    source=SOURCE, ticker=ticker
+                ).exclude(id=existing.id).first()
+                if conflicting:
+                    logger.warning(
+                        "Cannot update ticker for instrument %s (%s) from %s to %s: "
+                        "ticker %s is already used by instrument %s for source %s",
+                        instrument.id, instrument.isin or instrument.name,
+                        existing.ticker, ticker, ticker, conflicting.instrument_id,
+                        SOURCE,
+                    )
+                else:
+                    existing.ticker = ticker
+                    existing.save(update_fields=["ticker"])
+            if fin_id and existing.fin_instrm_id != fin_id:
+                existing.fin_instrm_id = fin_id
+                existing.save(update_fields=["fin_instrm_id"])
+            return existing
+
+        return InstrumentTicker.objects.create(
+            instrument=instrument,
+            source=SOURCE,
+            ticker=ticker,
+            fin_instrm_id=fin_id,
+        )
+
+    def _maybe_upgrade_link(self, link, ticker, isin, name, fin_id):
+        """Update an existing ``InstrumentTicker`` if ISIN/fin_instrm_id differ."""
+        updated = False
+        if isin:
+            instrument = self._resolve_instrument_by_isin(isin, name)
+            if link.instrument_id != instrument.id:
+                old_inst = link.instrument
+                if old_inst.isin is None:
+                    link.instrument = instrument
+                    updated = True
+                else:
+                    logger.warning(
+                        "Cannot re-point ticker %s from instrument %s (%s) to "
+                        "instrument %s (%s): old instrument already has ISIN",
+                        link.ticker, old_inst.id, old_inst.isin or old_inst.name,
+                        instrument.id, instrument.isin or instrument.name,
+                    )
+        if fin_id and link.fin_instrm_id != fin_id:
+            link.fin_instrm_id = fin_id
+            updated = True
+        if updated:
+            link.save(update_fields=["fin_instrm_id", "instrument"])
+        return link
 
     # ---------------------------------------------------------------- helpers
 
