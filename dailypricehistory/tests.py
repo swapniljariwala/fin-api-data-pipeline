@@ -99,7 +99,7 @@ class IngestBhavcopyTests(TestCase):
     def test_days_mode(self):
         # Sample file is cm24Aug2026bhav.csv with embedded trade_date 2026-08-24.
         data_dir = self._copy_sample("cm24Aug2026bhav.csv")
-        _run(days=2, data_dir=data_dir, no_download=True)
+        _run(days=3, data_dir=data_dir, no_download=True)
         self.assertTrue(
             BhavcopyFile.objects.filter(trade_date="2026-08-24").exists()
         )

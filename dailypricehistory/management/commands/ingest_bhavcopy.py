@@ -367,6 +367,7 @@ class Command(BaseCommand):
                         "%s: download attempt %d/%d failed (%s), retrying",
                         day, attempt, self.retries, exc,
                     )
+                    time.sleep(self.delay)
                     continue
                 self._download_ok = False
                 if self._is_nse_holiday(day):
@@ -741,14 +742,17 @@ class Command(BaseCommand):
 
     def _maybe_upgrade_link(self, link, ticker, isin, name, fin_id):
         """Update an existing ``InstrumentTicker`` if ISIN/fin_instrm_id differ."""
-        updated = False
+        changed = set()
         if isin:
             instrument = self._resolve_instrument_by_isin(isin, name)
             if link.instrument_id != instrument.id:
                 old_inst = link.instrument
                 if old_inst.isin is None:
-                    link.instrument = instrument
-                    updated = True
+                    old_inst.isin = isin
+                    if name:
+                        old_inst.name = name
+                    old_inst.save(update_fields=["isin", "name"])
+                    self._instruments_by_isin[isin] = old_inst
                 else:
                     logger.warning(
                         "Cannot re-point ticker %s from instrument %s (%s) to "
@@ -758,9 +762,9 @@ class Command(BaseCommand):
                     )
         if fin_id and link.fin_instrm_id != fin_id:
             link.fin_instrm_id = fin_id
-            updated = True
-        if updated:
-            link.save(update_fields=["fin_instrm_id", "instrument"])
+            changed.add("fin_instrm_id")
+        if changed:
+            link.save(update_fields=list(changed))
         return link
 
     # ---------------------------------------------------------------- helpers
