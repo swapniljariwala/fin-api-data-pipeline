@@ -748,11 +748,22 @@ class Command(BaseCommand):
             if link.instrument_id != instrument.id:
                 old_inst = link.instrument
                 if old_inst.isin is None:
-                    old_inst.isin = isin
-                    if name:
-                        old_inst.name = name
-                    old_inst.save(update_fields=["isin", "name"])
-                    self._instruments_by_isin[isin] = old_inst
+                    # Check if another instrument already has this ISIN to avoid UNIQUE constraint failure
+                    conflicting_instrument = Instrument.objects.filter(isin=isin).exclude(id=old_inst.id).first()
+                    if conflicting_instrument is not None:
+                        logger.warning(
+                            "Cannot set ISIN %s on instrument %s: already used by instrument %s",
+                            isin, old_inst.id, conflicting_instrument.id
+                        )
+                    else:
+                        old_inst.isin = isin
+                        if name:
+                            old_inst.name = name
+                        update_fields = ["isin"]
+                        if name:
+                            update_fields.append("name")
+                        old_inst.save(update_fields=update_fields)
+                        self._instruments_by_isin[isin] = old_inst
                 else:
                     logger.warning(
                         "Cannot re-point ticker %s from instrument %s (%s) to "
