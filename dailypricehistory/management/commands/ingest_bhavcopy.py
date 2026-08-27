@@ -765,12 +765,17 @@ class Command(BaseCommand):
                         old_inst.save(update_fields=update_fields)
                         self._instruments_by_isin[isin] = old_inst
                 else:
-                    logger.warning(
-                        "Cannot re-point ticker %s from instrument %s (%s) to "
-                        "instrument %s (%s): old instrument already has ISIN",
+                    # Old instrument has a different ISIN (e.g. after bonus issue /
+                    # capital restructuring). Re-point the ticker link to the new
+                    # instrument unconditionally.
+                    logger.info(
+                        "Re-pointing ticker %s from instrument %s (%s) to "
+                        "instrument %s (%s): ISIN superseded",
                         link.ticker, old_inst.id, old_inst.isin or old_inst.name,
                         instrument.id, instrument.isin or instrument.name,
                     )
+                    link.instrument = instrument
+                    changed.add("instrument")
         if fin_id and link.fin_instrm_id != fin_id:
             link.fin_instrm_id = fin_id
             changed.add("fin_instrm_id")
