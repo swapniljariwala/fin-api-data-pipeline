@@ -1,4 +1,4 @@
-
+data/
 /data/*
 !data/cm05Jul2024bhav.csv
 !data/cm24Aug2026bhav.csv
