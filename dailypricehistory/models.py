@@ -36,7 +36,7 @@ class NSECmPriceHistory(models.Model):
         on_delete=models.CASCADE,
         related_name="price_history",
     )
-    trade_date = models.DateTimeField() 
+    trade_date = models.DateField() 
     series = models.ForeignKey(
         Series,
         on_delete=models.PROTECT,
@@ -63,7 +63,7 @@ class NSECmPriceHistory(models.Model):
     )
 
     class Meta:
-        db_table = "cm_price_history"
+        db_table = "nse_cm_price_history"
         constraints = [
             models.UniqueConstraint(
                 fields=["instrument", "trade_date", "series"],

@@ -11,7 +11,7 @@ The command is restart-safe:
   only committed together with its price rows, so an interrupted run never
   leaves a file marked as ingested without its data.
 * Price rows are inserted with ``ignore_conflicts`` on the unique key
-  ``(instrument_ticker, trade_date, series)``, so re-running never duplicates
+  ``(instrument, trade_date, series)``, so re-running never duplicates
   entries already present.
 
 Mode selection (exactly one):
@@ -62,14 +62,17 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from dailypricehistory.models import BhavcopyFile, CmPriceHistory
+from dailypricehistory.models import BhavcopyFile, NSECmPriceHistory
 from dailypricehistory.object_store import upload_bhavcopy_to_object_store
-from securityinfo.models import Instrument, InstrumentTicker, Series
+from securityinfo.models import (
+    Instrument,
+    NSESymbolInstrumentMap,
+    NSESymbols,
+    Series,
+)
 
 SOURCE = "NSE"
 SEGMENT = "CM"
-
-_PRIMARY_SERIES = frozenset({"EQ", "SM"})
 
 logger = logging.getLogger(__name__)
 
@@ -515,9 +518,7 @@ class Command(BaseCommand):
     def _parse_legacy_row(self, raw, expected_date):
         series = (raw.get("SERIES") or "").strip()
         return {
-            "ticker": self._disambiguate_ticker(
-                (raw.get("SYMBOL") or "").strip(), series
-            ),
+            "ticker": (raw.get("SYMBOL") or "").strip(),
             "series": series,
             "trade_date": expected_date,
             "isin": _clean(raw.get("ISIN")),
@@ -549,9 +550,7 @@ class Command(BaseCommand):
             return None  # guard: only STK instruments are ingested
         series = (raw.get("SctySrs") or "").strip()
         return {
-            "ticker": self._disambiguate_ticker(
-                (raw.get("TckrSymb") or "").strip(), series
-            ),
+            "ticker": (raw.get("TckrSymb") or "").strip(),
             "series": series,
             "trade_date": expected_date,
             "isin": _clean(raw.get("ISIN")),
@@ -568,12 +567,6 @@ class Command(BaseCommand):
             "num_trades": _int(raw.get("TtlNbOfTxsExctd")),
             "settlement_price": _dec(raw.get("SttlmPric")),
         }
-
-    @staticmethod
-    def _disambiguate_ticker(ticker, series):
-        if series not in _PRIMARY_SERIES:
-            return f"{ticker}-{series}" if ticker else ticker
-        return ticker
 
     # --------------------------------------------------------------- ingesting
 
@@ -609,19 +602,21 @@ class Command(BaseCommand):
                 trade_date=file_date,
             )
             self._series_cache = {}
-            self._instruments_by_isin = {}
+            self._instrument_cache = {}
+            self._symbol_cache = {}
+            self._symbol_map_cache = set()
             price_rows = []
             for row in rows:
-                ticker = self._resolve_ticker(
-                    row["ticker"],
+                instrument = self._resolve_instrument(
                     isin=row["isin"],
                     name=row["name"],
-                    fin_id=row["fin_instrm_id"],
+                    ticker=row["ticker"],
                 )
+                self._ensure_symbol_map(row["ticker"], instrument)
                 series = self._resolve_series(row["series"])
                 price_rows.append(
-                    CmPriceHistory(
-                        instrument_ticker=ticker,
+                    NSECmPriceHistory(
+                        instrument=instrument,
                         trade_date=row["trade_date"],
                         series=series,
                         open=row["open"],
@@ -637,7 +632,7 @@ class Command(BaseCommand):
                         file=file_obj,
                     )
                 )
-            created = CmPriceHistory.objects.bulk_create(
+            created = NSECmPriceHistory.objects.bulk_create(
                 price_rows, ignore_conflicts=True, batch_size=1000
             )
             file_obj.row_count = len(created)
@@ -671,117 +666,47 @@ class Command(BaseCommand):
             )[0]
         return self._series_cache[code]
 
-    def _resolve_instrument_by_isin(self, isin, name):
-        instrument = self._instruments_by_isin.get(isin)
-        if instrument is None:
+    def _resolve_instrument(self, isin, name, ticker):
+        """Return the global ``Instrument`` for a bhavcopy row.
+
+        Keyed by ISIN when present; otherwise matched or created against the
+        ticker/name (legacy bhavcopies often omit ISIN).
+        """
+        cache_key = isin if isin else f"#{ticker or name}"
+        instrument = self._instrument_cache.get(cache_key)
+        if instrument is not None:
+            return instrument
+        if isin:
             instrument, _ = Instrument.objects.get_or_create(
                 isin=isin,
                 defaults={"name": name or "", "instrument_type": "STK"},
             )
-            self._instruments_by_isin[isin] = instrument
+        else:
+            instrument, _ = Instrument.objects.get_or_create(
+                isin=None,
+                name=ticker or name or "",
+                defaults={"instrument_type": "STK"},
+            )
         if name and not instrument.name:
             instrument.name = name
             instrument.save(update_fields=["name"])
+        self._instrument_cache[cache_key] = instrument
         return instrument
 
-    def _resolve_ticker(self, ticker, isin=None, name=None, fin_id=None):
-        link = InstrumentTicker.objects.filter(
-            source=SOURCE, ticker=ticker
-        ).select_related("instrument").first()
-
-        if link is not None:
-            link = self._maybe_upgrade_link(link, ticker, isin, name, fin_id)
-            return link
-
-        if not isin:
-            instrument, _ = Instrument.objects.get_or_create(
-                isin=None,
-                name=ticker or "",
-                defaults={"instrument_type": "STK"},
+    def _ensure_symbol_map(self, ticker, instrument):
+        """Record that ``ticker`` (an NSE symbol) belongs to ``instrument``."""
+        if not ticker:
+            return
+        symbol = self._symbol_cache.get(ticker)
+        if symbol is None:
+            symbol, _ = NSESymbols.objects.get_or_create(symbol=ticker)
+            self._symbol_cache[ticker] = symbol
+        key = (symbol.id, instrument.id)
+        if key not in self._symbol_map_cache:
+            NSESymbolInstrumentMap.objects.get_or_create(
+                symbol=symbol, instrument=instrument
             )
-            return InstrumentTicker.objects.create(
-                instrument=instrument,
-                source=SOURCE,
-                ticker=ticker,
-                fin_instrm_id=fin_id,
-            )
-
-        # (source, ticker) not found but we have ISIN: check for a symbol
-        # change — same instrument already linked under a different ticker.
-        instrument = self._resolve_instrument_by_isin(isin, name)
-        existing = InstrumentTicker.objects.filter(
-            instrument=instrument, source=SOURCE
-        ).first()
-        if existing is not None:
-            if existing.ticker != ticker:
-                conflicting = InstrumentTicker.objects.filter(
-                    source=SOURCE, ticker=ticker
-                ).exclude(id=existing.id).first()
-                if conflicting:
-                    logger.warning(
-                        "Cannot update ticker for instrument %s (%s) from %s to %s: "
-                        "ticker %s is already used by instrument %s for source %s",
-                        instrument.id, instrument.isin or instrument.name,
-                        existing.ticker, ticker, ticker, conflicting.instrument_id,
-                        SOURCE,
-                    )
-                else:
-                    existing.ticker = ticker
-                    existing.save(update_fields=["ticker"])
-            if fin_id and existing.fin_instrm_id != fin_id:
-                existing.fin_instrm_id = fin_id
-                existing.save(update_fields=["fin_instrm_id"])
-            return existing
-
-        return InstrumentTicker.objects.create(
-            instrument=instrument,
-            source=SOURCE,
-            ticker=ticker,
-            fin_instrm_id=fin_id,
-        )
-
-    def _maybe_upgrade_link(self, link, ticker, isin, name, fin_id):
-        """Update an existing ``InstrumentTicker`` if ISIN/fin_instrm_id differ."""
-        changed = set()
-        if isin:
-            instrument = self._resolve_instrument_by_isin(isin, name)
-            if link.instrument_id != instrument.id:
-                old_inst = link.instrument
-                if old_inst.isin is None:
-                    # Check if another instrument already has this ISIN to avoid UNIQUE constraint failure
-                    conflicting_instrument = Instrument.objects.filter(isin=isin).exclude(id=old_inst.id).first()
-                    if conflicting_instrument is not None:
-                        logger.warning(
-                            "Cannot set ISIN %s on instrument %s: already used by instrument %s",
-                            isin, old_inst.id, conflicting_instrument.id
-                        )
-                    else:
-                        old_inst.isin = isin
-                        if name:
-                            old_inst.name = name
-                        update_fields = ["isin"]
-                        if name:
-                            update_fields.append("name")
-                        old_inst.save(update_fields=update_fields)
-                        self._instruments_by_isin[isin] = old_inst
-                else:
-                    # Old instrument has a different ISIN (e.g. after bonus issue /
-                    # capital restructuring). Re-point the ticker link to the new
-                    # instrument unconditionally.
-                    logger.info(
-                        "Re-pointing ticker %s from instrument %s (%s) to "
-                        "instrument %s (%s): ISIN superseded",
-                        link.ticker, old_inst.id, old_inst.isin or old_inst.name,
-                        instrument.id, instrument.isin or instrument.name,
-                    )
-                    link.instrument = instrument
-                    changed.add("instrument")
-        if fin_id and link.fin_instrm_id != fin_id:
-            link.fin_instrm_id = fin_id
-            changed.add("fin_instrm_id")
-        if changed:
-            link.save(update_fields=list(changed))
-        return link
+            self._symbol_map_cache.add(key)
 
     # ---------------------------------------------------------------- helpers
 

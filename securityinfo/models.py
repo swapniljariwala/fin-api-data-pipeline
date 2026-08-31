@@ -19,7 +19,7 @@ class Series(models.Model):
 class Instrument(models.Model):
     """Global security identity, keyed by ISIN across NSE/BSE."""
 
-    isin = models.CharField(max_length=12, unique=True, null=True, blank=True)
+    isin = models.CharField(max_length=12, unique=True, null=True)
     name = models.CharField(max_length=255, blank=True)
     instrument_type = models.CharField(max_length=20, default="STK")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -48,6 +48,7 @@ class NSESymbolInstrumentMap(models.Model):
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name='symbols')
 
     class Meta:
+        db_table = "nse_symbols_instrument_map"
         constraints = [
                 models.UniqueConstraint(fields=['symbol', 'instrument'], name='unique_symbol_instrument')
                 ]

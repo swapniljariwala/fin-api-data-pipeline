@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import BhavcopyFile, CmPriceHistory
+from .models import BhavcopyFile, NSECmPriceHistory
 
 
 @admin.register(BhavcopyFile)
@@ -20,10 +20,10 @@ class BhavcopyFileAdmin(admin.ModelAdmin):
     readonly_fields = ["ingested_at"]
 
 
-@admin.register(CmPriceHistory)
-class CmPriceHistoryAdmin(admin.ModelAdmin):
+@admin.register(NSECmPriceHistory)
+class NSECmPriceHistoryAdmin(admin.ModelAdmin):
     list_display = [
-        "instrument_ticker",
+        "instrument",
         "trade_date",
         "series",
         "open",
@@ -33,10 +33,10 @@ class CmPriceHistoryAdmin(admin.ModelAdmin):
         "volume",
         "turnover",
     ]
-    search_fields = ["instrument_ticker__ticker", "instrument_ticker__instrument__isin"]
+    search_fields = ["instrument__isin", "instrument__name", "series__code"]
     list_filter = ["series", "trade_date"]
     date_hierarchy = "trade_date"
-    list_select_related = ["instrument_ticker", "series"]
+    list_select_related = ["instrument", "series"]
     ordering = ["-trade_date"]
     list_per_page = 100
-    autocomplete_fields = ["instrument_ticker", "series", "file"]
+    autocomplete_fields = ["instrument", "series", "file"]
