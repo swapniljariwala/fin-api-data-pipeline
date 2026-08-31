@@ -32,27 +32,26 @@ class Instrument(models.Model):
         return self.isin or self.name or f"Instrument #{self.pk}"
 
 
-class InstrumentTicker(models.Model):
-    """Per-exchange ticker and exchange-specific codes for an instrument."""
-
-    instrument = models.ForeignKey(
-        Instrument, on_delete=models.CASCADE, related_name="tickers"
-    )
-    source = models.CharField(max_length=10)
-    ticker = models.CharField(max_length=50)
-    fin_instrm_id = models.IntegerField(null=True, blank=True)
+class NSESymbols(models.Model):
+    symbol = models.CharField(max_length=50)
 
     class Meta:
-        db_table = "instrument_tickers"
+        db_table = "nse_symbols"
         constraints = [
-            models.UniqueConstraint(
-                fields=["instrument", "source"], name="uniq_instrument_source"
-            ),
-            models.UniqueConstraint(
-                fields=["source", "ticker"], name="uniq_source_ticker"
-            ),
-        ]
-        ordering = ["ticker", "source"]
-
+            models.UniqueConstraint(fields=['symbol'], name='unique_symbol')
+                ]
     def __str__(self):
-        return f"{self.ticker} ({self.source})"
+        return self.symbol 
+
+class NSESymbolInstrumentMap(models.Model):
+    symbol = models.ForeignKey(NSESymbols, on_delete=models.CASCADE, related_name='instruments')
+    instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name='symbols')
+
+    class Meta:
+        constraints = [
+                models.UniqueConstraint(fields=['symbol', 'instrument'], name='unique_symbol_instrument')
+                ]
+    
+    def __str__(self):
+        return f"{self.symbol}-{self.instrument}"
+

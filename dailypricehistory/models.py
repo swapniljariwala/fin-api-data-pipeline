@@ -1,4 +1,5 @@
 from django.db import models
+from securityinfo.models import Instrument,  Series
 
 
 class BhavcopyFile(models.Model):
@@ -27,17 +28,17 @@ class BhavcopyFile(models.Model):
         return self.file_name
 
 
-class CmPriceHistory(models.Model):
+class NSECmPriceHistory(models.Model):
     """Daily OHLC row for an STK instrument on one exchange and series."""
 
-    instrument_ticker = models.ForeignKey(
-        "securityinfo.InstrumentTicker",
+    instrument = models.ForeignKey(
+        Instrument,
         on_delete=models.CASCADE,
         related_name="price_history",
     )
-    trade_date = models.DateField()
+    trade_date = models.DateTimeField() 
     series = models.ForeignKey(
-        "securityinfo.Series",
+        Series,
         on_delete=models.PROTECT,
         related_name="price_history",
     )
@@ -65,14 +66,16 @@ class CmPriceHistory(models.Model):
         db_table = "cm_price_history"
         constraints = [
             models.UniqueConstraint(
-                fields=["instrument_ticker", "trade_date", "series"],
-                name="uniq_price_ticker_date_series",
+                fields=["instrument", "trade_date", "series"],
+                name="uniq_price_instrument_date_series",
             ),
         ]
         indexes = [
             models.Index(fields=["trade_date"], name="idx_cm_price_date"),
-            models.Index(fields=["instrument_ticker"], name="idx_cm_price_ticker"),
+            models.Index(fields=["instrument"], name="idx_cm_instrument"),
         ]
 
     def __str__(self):
         return f"#{self.pk} {self.trade_date}"
+
+
