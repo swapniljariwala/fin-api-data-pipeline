@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "securityinfo",
     "dailypricehistory",
+    "fnopricehistory",
 ]
 
 MIDDLEWARE = [
@@ -193,6 +194,11 @@ LOGGING = {
             "propagate": False,
         },
         "securityinfo": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "fnopricehistory": {
             "handlers": ["console", "file"],
             "level": "INFO",
             "propagate": False,

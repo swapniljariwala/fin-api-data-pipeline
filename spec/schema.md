@@ -245,7 +245,7 @@ split `A/B`, rights `(P−E)/P`) when back-adjusted series are needed.
 
 | Item | When | Notes |
 |---|---|---|
-| `fo_price_history` + `derivative_contracts` | Later | FO "instruments" are contracts (underlying × expiry × strike × CE/PE); separate identity model, `FUT`/`OPT` types |
+| `FnoPriceHistory` + `FnoContract` | Done | Implemented in the `fnopricehistory` app per [`TODO-fno-storage.md`](TODO-fno-storage.md) |
 | `index_prices` | Later | Indices have no ISIN; key `(source, ticker)`, e.g. `NIFTY 50` |
 | Debt segment | Later | Own bhavcopy files, own table |
 | `corporate_actions` ingestion + back-adjustment | Later | §6 |

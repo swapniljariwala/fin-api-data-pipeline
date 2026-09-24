@@ -15,12 +15,15 @@ Downloads NSE/BSE datasets (via `jugaad-data`) into SQLite, managed with Django.
 
 Current state:
 
-- Django project `pipeline/` with two apps: `securityinfo` (instrument master:
-  series, instruments, tickers) and `dailypricehistory` (bhavcopy provenance +
-  daily OHLC).
+- Django project `pipeline/` with three apps: `securityinfo` (instrument
+  master: series, instruments, tickers), `dailypricehistory` (bhavcopy
+  provenance + daily CM OHLC) and `fnopricehistory` (F&O contract identity +
+  daily OHLC/OI).
 - Working `ingest_bhavcopy` management command: downloads NSE CM bhavcopies and
   ingests them into `cm_price_history`. Idempotent and restart-safe; see
   [CLI reference](#cli-reference) below.
+- Working `ingest_fno_bhavcopy` management command: same pattern for NSE F&O
+  bhavcopies, into `fno_price_history` / `fno_contracts`.
 - Project-level logging: console + `logs/pipeline.log` (rotated daily, 7 days kept).
 - Object-store upload is a stub (`dailypricehistory/object_store.py`); to be
   implemented later.
@@ -30,7 +33,8 @@ Current state:
 | Path | What it is | Details |
 |---|---|---|
 | [`pipeline/`](pipeline/AGENTS.md) | Django project (settings, URLconf, ASGI/WSGI) | [AGENTS.md](pipeline/AGENTS.md) |
-| [`dailypricehistory/`](dailypricehistory/AGENTS.md) | Django app: daily price/OHLC history | [AGENTS.md](dailypricehistory/AGENTS.md) |
+| [`dailypricehistory/`](dailypricehistory/AGENTS.md) | Django app: daily CM price/OHLC history | [AGENTS.md](dailypricehistory/AGENTS.md) |
+| [`fnopricehistory/`](fnopricehistory/AGENTS.md) | Django app: F&O contract identity + daily OHLC/OI | [AGENTS.md](fnopricehistory/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
 
@@ -94,6 +98,34 @@ Guarantees:
   the rows land under their real date and dedupe against the actual day.
 - Progress (INFO) and failures (ERROR with traceback) go to console and
   `logs/pipeline.log`; failures exit non-zero.
+
+### F&O bhavcopy ingest
+
+```
+python manage.py ingest_fno_bhavcopy [--latest | --from YYYY-MM-DD | --days N]
+                                     [--to YYYY-MM-DD] [--data-dir PATH]
+                                     [--no-download] [--lookback N] [--upload]
+```
+
+Same options and guarantees as `ingest_bhavcopy` above (restart-safe,
+holiday-aware, file-date-authoritative), applied to the F&O segment:
+downloads via `bhavcopy_fo_save`, files named `fo{dd}{MMM}{yyyy}bhav.csv`,
+rows land in `fno_price_history` keyed by `(contract, trade_date)` where
+`contract` identifies an `FnoContract` by
+`(underlying_symbol, instrument_type, expiry_date, strike_price, option_type)`.
+Legacy `INSTRUMENT` codes (`FUTSTK`/`OPTSTK`/`FUTIDX`/`OPTIDX`) are normalized
+to their UDiFF equivalents (`STF`/`STO`/`IDF`/`IDO`) so both formats share one
+`instrument_type` column.
+
+Retention (safe; dry run unless `--apply`):
+
+```
+python manage.py purge_expired_fno_contracts [--apply]
+```
+
+Deletes `FnoContract` rows (and their cascaded `FnoPriceHistory` rows) more
+than 365 calendar days past `expiry_date`. Run on a schedule alongside
+ingest, not inline in it.
 
 ## Root-level files
 
