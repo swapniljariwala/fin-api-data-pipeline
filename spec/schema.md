@@ -174,6 +174,46 @@ Source field mapping: legacy `OPEN_PRICE`→`open`, ... `TURNOVER_LACS`×1e5→`
 `AVG_PRICE`, `DELIV_*` dropped; UDiFF `OpnPric`→`open`, ... `TtlTrfVal`→`turnover`
 (already rupees).
 
+### 3.6 `indices` — global index identity
+
+```sql
+CREATE TABLE indices (
+    id              INTEGER PRIMARY KEY,
+    source          TEXT NOT NULL,           -- 'NSE'
+    ticker          TEXT NOT NULL,           -- 'NIFTY 50', 'SENSEX', 'NIFTY NEXT 50', etc.
+    name            TEXT,                    -- Full name if available
+    UNIQUE (source, ticker)
+);
+```
+
+Index identity is keyed by `(source, ticker)` directly (no ISIN, unlike instruments).
+
+### 3.7 `index_price_history` — daily OHLC for indices
+
+```sql
+CREATE TABLE index_price_history (
+    id            INTEGER PRIMARY KEY,
+    index_id      INTEGER NOT NULL REFERENCES indices(id),
+    trade_date    TEXT NOT NULL,            -- ISO YYYY-MM-DD
+    open          DECIMAL(18,4),
+    high          DECIMAL(18,4),
+    low           DECIMAL(18,4),
+    close         DECIMAL(18,4),
+    volume        INTEGER,                  -- Trading volume
+    turnover      DECIMAL(22,2),            -- In full rupees
+    file_id       INTEGER REFERENCES bhavcopy_files(id),
+    UNIQUE (index_id, trade_date)
+);
+
+CREATE INDEX idx_index_price_date   ON index_price_history(trade_date);
+CREATE INDEX idx_index_price_index  ON index_price_history(index_id);
+```
+
+**Key differences from CM price history:**
+- No `series` FK (indices don't have trading series like stocks)
+- No `settlement_price` or `num_trades` (not in NIFTY Indices data)
+- Simpler identity key: `(index, trade_date)` (no series dimension)
+
 ---
 
 ## 4. Example queries
@@ -241,12 +281,12 @@ split `A/B`, rights `(P−E)/P`) when back-adjusted series are needed.
 
 ---
 
-## 7. Future extensions
+## 8. Future extensions
 
 | Item | When | Notes |
 |---|---|---|
 | `FnoPriceHistory` + `FnoContract` | Done | Implemented in the `fnopricehistory` app per [`TODO-fno-storage.md`](TODO-fno-storage.md) |
-| `index_prices` | Later | Indices have no ISIN; key `(source, ticker)`, e.g. `NIFTY 50` |
+| `index_price_history` + `indices` | Done | Implemented in the `indexpricehistory` app; covers NIFTY indices from NIFTY Indices website |
 | Debt segment | Later | Own bhavcopy files, own table |
 | `corporate_actions` ingestion + back-adjustment | Later | §6 |
 | BSE sources | Later | Same schema; `source = 'BSE'`, add BSE scrip code to `instrument_tickers` |

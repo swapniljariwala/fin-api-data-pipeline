@@ -15,15 +15,17 @@ Downloads NSE/BSE datasets (via `jugaad-data`) into SQLite, managed with Django.
 
 Current state:
 
-- Django project `pipeline/` with three apps: `securityinfo` (instrument
-  master: series, instruments, tickers), `dailypricehistory` (bhavcopy
-  provenance + daily CM OHLC) and `fnopricehistory` (F&O contract identity +
-  daily OHLC/OI).
+- Django project `pipeline/` with four apps: `securityinfo` (instrument
+  master: series, instruments, tickers), `dailypricehistory` (CM bhavcopy
+  provenance + daily OHLC), `fnopricehistory` (F&O contract identity +
+  daily OHLC/OI), and `indexpricehistory` (index daily OHLC).
 - Working `ingest_bhavcopy` management command: downloads NSE CM bhavcopies and
   ingests them into `cm_price_history`. Idempotent and restart-safe; see
   [CLI reference](#cli-reference) below.
 - Working `ingest_fno_bhavcopy` management command: same pattern for NSE F&O
   bhavcopies, into `fno_price_history` / `fno_contracts`.
+- Working `ingest_index_bhavcopy` management command: downloads NIFTY index
+  bhavcopies and ingests them into `index_price_history` / `indices`.
 - Project-level logging: console + `logs/pipeline.log` (rotated daily, 7 days kept).
 - Object-store upload is a stub (`dailypricehistory/object_store.py`); to be
   implemented later.
@@ -35,6 +37,7 @@ Current state:
 | [`pipeline/`](pipeline/AGENTS.md) | Django project (settings, URLconf, ASGI/WSGI) | [AGENTS.md](pipeline/AGENTS.md) |
 | [`dailypricehistory/`](dailypricehistory/AGENTS.md) | Django app: daily CM price/OHLC history | [AGENTS.md](dailypricehistory/AGENTS.md) |
 | [`fnopricehistory/`](fnopricehistory/AGENTS.md) | Django app: F&O contract identity + daily OHLC/OI | [AGENTS.md](fnopricehistory/AGENTS.md) |
+| [`indexpricehistory/`](indexpricehistory/AGENTS.md) | Django app: index daily OHLC history | [AGENTS.md](indexpricehistory/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
 
@@ -126,6 +129,29 @@ python manage.py purge_expired_fno_contracts [--apply]
 Deletes `FnoContract` rows (and their cascaded `FnoPriceHistory` rows) more
 than 365 calendar days past `expiry_date`. Run on a schedule alongside
 ingest, not inline in it.
+
+### Index bhavcopy ingest
+
+```
+python manage.py ingest_index_bhavcopy [--latest | --from YYYY-MM-DD | --days N]
+                                       [--to YYYY-MM-DD] [--data-dir PATH]
+                                       [--no-download] [--lookback N]
+```
+
+Same options and guarantees as `ingest_bhavcopy` above (restart-safe,
+holiday-aware, file-date-authoritative), applied to NIFTY indices:
+downloads via NIFTY Indices website (https://www.niftyindices.com) using
+`bhavcopy_index_save`, files named `ind_close_all_DDMMYYYY.csv`, rows land
+in `index_price_history` keyed by `(index, trade_date)` where `index` is
+identified by `(source, ticker)`, e.g., `('NSE', 'NIFTY 50')`.
+
+Examples:
+
+```bash
+python manage.py ingest_index_bhavcopy                    # latest
+python manage.py ingest_index_bhavcopy --days 5           # last 5 calendar days
+python manage.py ingest_index_bhavcopy --from 2024-08-01 --to 2024-08-31
+```
 
 ## Root-level files
 
