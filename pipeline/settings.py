@@ -204,5 +204,10 @@ LOGGING = {
             "level": "INFO",
             "propagate": False,
         },
+        "indexpricehistory": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
     },
 }
