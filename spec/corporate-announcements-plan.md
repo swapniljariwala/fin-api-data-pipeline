@@ -104,7 +104,7 @@ This directly supports the three query patterns:
 Split for incremental review — each sprint is a reviewable, independently
 mergeable unit, in order.
 
-### Sprint 1 — Models only
+### Sprint 1 — Models only ✅ done (`88b979d`)
 
 - New `corporateannouncements` app (`python manage.py startapp corporateannouncements`,
   registered in `INSTALLED_APPS`).
@@ -118,37 +118,51 @@ mergeable unit, in order.
   as expected via Django shell (`CorporateAnnouncement.objects.none()`, admin
   page loads).
 
-### Sprint 2 — Basic ingest command
+### Sprint 2 — Basic ingest command ✅ done (`b21d8bc`)
 
 - `ingest_corporate_announcements` management command, minimal surface:
-  `--latest` (default) / `--from YYYY-MM-DD --to YYYY-MM-DD` / `--days N` —
-  same mutually-exclusive mode group as `ingest_bhavcopy.py`.
+  `--latest` (default, last `--lookback` days, default 3) /
+  `--from YYYY-MM-DD --to YYYY-MM-DD` / `--days N` — same
+  mutually-exclusive mode group as `ingest_bhavcopy.py`.
 - Calls `NSELive().corporate_announcements(from_date=..., to_date=...)`
-  directly (no `--symbol`/`--segment` filters yet).
+  directly (no `--symbol`/`--segment` filters yet — that's Sprint 3).
 - Reuses `_resolve_instrument`-equivalent logic (ISIN-first via `sm_isin`,
   symbol fallback) + `_ensure_symbol_map`, and `get_or_create` for
   `AnnouncementCategory`, each with a per-run cache dict as in
   `ingest_bhavcopy.py`.
+- `sort_date`/`exchdisstime` are parsed and made timezone-aware as IST
+  (`Asia/Kolkata`, via `zoneinfo` + `django.utils.timezone.make_aware`)
+  before being stored — NSE's feed has no explicit offset, and
+  `USE_TZ = True` requires aware datetimes; Django stores them as UTC.
 - Idempotency: `bulk_create(..., ignore_conflicts=True)` keyed on `seq_id`'s
-  unique constraint, inside `transaction.atomic()` per batch.
-- **Verification:** run `ingest_corporate_announcements --days 3` against the
-  live API, confirm row counts land in `corporate_announcements` /
-  `announcement_categories`; re-run the same command and confirm it's a no-op
-  (dedup via `seq_id`).
+  unique constraint, inside `transaction.atomic()` for the whole run (one
+  API response is small enough not to need per-batch transactions).
+- A record missing `seq_id`/`sort_date`, or with an unparseable `sort_date`,
+  is logged and skipped rather than failing the run.
+- **Verification:** ran `ingest_corporate_announcements --days 3` against the
+  live API — 761 rows landed in `corporate_announcements`, 54 in
+  `announcement_categories`; re-running the same command was a confirmed
+  no-op (dedup via `seq_id`).
+- No logger entry yet (uses `logging.getLogger(__name__)`, falls through to
+  the root logger) — wiring a dedicated `corporateannouncements` entry into
+  `LOGGING` is Sprint 3.
 
-### Sprint 3 — CLI polish + logging
+### Sprint 3 — CLI polish + logging ✅ done
 
-- Add `--symbol SYM` and `--segment` (default `equities`) filters, passed
+- Added `--symbol SYM` and `--segment` (default `equities`) filters, passed
   through to `corporate_announcements(...)`.
-- Wire up a `corporateannouncements` logger entry in `pipeline/settings.py`
+- Wired up a `corporateannouncements` logger entry in `pipeline/settings.py`
   `LOGGING` config, mirroring the `indexpricehistory` entry added in commit
   `d4f818f`.
-- Error handling / non-zero exit conventions matching `ingest_bhavcopy.py`
-  (collect failures across a batch, raise `CommandError` only after the full
-  range finishes).
-- **Verification:** confirm `logs/pipeline.log` shows the new logger's
-  entries; run with `--symbol RELIANCE` and confirm the API filter is applied
-  (fewer/targeted rows).
+- Error handling already matched the collect-and-continue convention from
+  Sprint 2 (unparseable/missing `seq_id`/`sort_date` records are logged and
+  skipped, never fail the run) — this command fetches the whole date range
+  in one API call rather than per-day like `ingest_bhavcopy.py`, so there is
+  no multi-day batch loop to wrap in a try/except + trailing `CommandError`.
+- **Verification:** ran `ingest_corporate_announcements --symbol RELIANCE
+  --days 30` — API filter applied (16 targeted rows vs. hundreds
+  unfiltered); confirmed `logs/pipeline.log` captured the new
+  `corporateannouncements` logger's entries.
 
 ### Sprint 4 — Docs
 

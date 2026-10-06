@@ -210,5 +210,10 @@ LOGGING = {
             "level": "INFO",
             "propagate": False,
         },
+        "corporateannouncements": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
     },
 }

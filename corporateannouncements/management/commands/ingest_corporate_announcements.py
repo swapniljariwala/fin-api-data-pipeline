@@ -12,6 +12,10 @@ Mode selection (exactly one):
 * ``--from YYYY-MM-DD --to YYYY-MM-DD``: inclusive date range.
 * ``--days N``: last N calendar days ending today.
 
+Optional filters, passed straight through to ``corporate_announcements``:
+``--symbol SYM`` restricts to one NSE symbol, ``--segment`` selects the NSE
+segment (default ``equities``).
+
 Idempotency: rows are inserted with ``bulk_create(ignore_conflicts=True)``
 keyed on the ``seq_id`` unique constraint, inside one transaction per run,
 so re-running the same range is a no-op for rows already ingested.
@@ -84,6 +88,16 @@ class Command(BaseCommand):
             default=3,
             help="calendar days to fetch for --latest (default: 3)",
         )
+        parser.add_argument(
+            "--symbol",
+            metavar="SYM",
+            help="restrict to announcements for this NSE symbol",
+        )
+        parser.add_argument(
+            "--segment",
+            default="equities",
+            help="NSE segment to query (default: equities)",
+        )
 
     def handle(self, *args, **options):
         if options["days"] is not None:
@@ -106,25 +120,29 @@ class Command(BaseCommand):
             from_date = date.today() - timedelta(days=options["lookback"] - 1)
             to_date = date.today()
 
+        symbol = options["symbol"]
+        segment = options["segment"]
+
         logger.info(
-            "Corporate announcements ingest job started (from=%s, to=%s)",
-            from_date, to_date,
+            "Corporate announcements ingest job started "
+            "(from=%s, to=%s, segment=%s, symbol=%s)",
+            from_date, to_date, segment, symbol,
         )
         started = time.monotonic()
         try:
-            self._run(from_date, to_date)
+            self._run(from_date, to_date, segment, symbol)
         finally:
             logger.info(
                 "Corporate announcements ingest job finished in %.1fs",
                 time.monotonic() - started,
             )
 
-    def _run(self, from_date, to_date):
+    def _run(self, from_date, to_date, segment, symbol):
         from jugaad_data.nse.live import NSELive
 
         try:
             records = NSELive().corporate_announcements(
-                from_date=from_date, to_date=to_date
+                segment=segment, from_date=from_date, to_date=to_date, symbol=symbol
             )
         except Exception as exc:
             raise CommandError(f"fetching corporate announcements failed: {exc}")
