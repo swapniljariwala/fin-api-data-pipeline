@@ -166,13 +166,15 @@ class Command(BaseCommand):
                     skipped += 1
                     continue
                 rows.append(row)
-            created = CorporateAnnouncement.objects.bulk_create(
+            before = CorporateAnnouncement.objects.count()
+            CorporateAnnouncement.objects.bulk_create(
                 rows, ignore_conflicts=True, batch_size=1000
             )
+            inserted = CorporateAnnouncement.objects.count() - before
 
         logger.info(
             "%d/%d record(s) ingested (%d duplicates skipped, %d unparseable)",
-            len(created), len(records), len(rows) - len(created), skipped,
+            inserted, len(records), len(rows) - inserted, skipped,
         )
 
     def _parse_record(self, raw):

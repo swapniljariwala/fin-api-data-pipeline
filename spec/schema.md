@@ -261,7 +261,7 @@ Unlike bhavcopies, this is a **live feed, not a dated archive file** (NSE's
 `symbol`) — **no denormalized `symbol` column**. A symbol can drift two ways (same
 ISIN gets a new symbol, or a symbol survives an ISIN change); `NSESymbolInstrumentMap`
 already accumulates every `(symbol, instrument)` pair ever observed, so
-`instruments.filter(symbols__symbol=X)` finds every instrument ever associated with a
+`instruments.filter(symbols__symbol__symbol=X)` finds every instrument ever associated with a
 symbol in both drift directions — a bare `symbol` string here would actually handle
 the ISIN-change case worse, not better.
 

@@ -44,7 +44,7 @@ Design decisions:
   pair ever observed (`_ensure_symbol_map` in
   `dailypricehistory/management/commands/ingest_bhavcopy.py:696` does
   `get_or_create` on the pair, never overwrites), so
-  `Instrument.objects.filter(symbols__symbol=X)` already returns every
+  `Instrument.objects.filter(symbols__symbol__symbol=X)` already returns every
   instrument ever associated with that symbol in both drift directions. A
   bare `symbol` string on the announcement would actually handle the
   ISIN-change case *worse* (it only matches the ISIN active at filing time),
@@ -92,7 +92,7 @@ Constraints/indexes (named, following repo convention):
 - `ordering = ["-announced_at"]`
 
 This directly supports the three query patterns:
-- by symbol → resolve symbol to instrument(s) via `Instrument.objects.filter(symbols__symbol=X)`
+- by symbol → resolve symbol to instrument(s) via `Instrument.objects.filter(symbols__symbol__symbol=X)`
   (uses `idx_announcement_instrument`/composite index), correct across both
   symbol-rename and ISIN-change drift since it reads the same
   `NSESymbolInstrumentMap` the ingest command writes to
@@ -175,14 +175,31 @@ mergeable unit, in order.
   "CLI reference" for `ingest_corporate_announcements`, modeled on the
   "Index bhavcopy ingest" subsection (options table + guarantees + examples).
 
-### Sprint 5 — Verification pass
+### Sprint 5 — Verification pass ✅ done
 
-- Full end-to-end run against the live API for a realistic range (e.g.
-  `--days 30`).
-- Re-run idempotency check at scale.
-- Spot-check all three query patterns in Django shell:
-  - `CorporateAnnouncement.objects.filter(instrument__symbols__symbol="RELIANCE")`
-  - `CorporateAnnouncement.objects.filter(announced_at__date__range=(d1, d2))`
-  - `CorporateAnnouncement.objects.filter(category__name="Board Meeting")`
-- Confirm `logs/pipeline.log` output end-to-end, and that `spec/schema.md`/`AGENTS.md`
-  docs match the final implementation.
+- Ran `ingest_corporate_announcements --days 30` against the live API: 15,355 rows
+  landed in `corporate_announcements`, 106 in `announcement_categories`.
+- Re-ran the same command: DB row count unchanged (15,355), confirming dedup via
+  `seq_id` at scale.
+- **Bug found and fixed during verification**: the ingest command logged
+  `"15355/15355 ingested"` on the *re-run* too, instead of `"0/15355 ingested,
+  15355 duplicates skipped"`. Root cause: `bulk_create(..., ignore_conflicts=True)`
+  on SQLite returns all passed-in model instances regardless of whether a row was
+  actually inserted (SQLite gives no per-row conflict feedback to Django). Fixed by
+  counting `CorporateAnnouncement.objects.count()` before/after the `bulk_create`
+  call instead of trusting its return value
+  (`management/commands/ingest_corporate_announcements.py`). Re-verified: the
+  re-run now correctly logs `0/15355 ingested (15355 duplicates skipped)`.
+- **Doc bug found and fixed**: the "by symbol" query pattern documented as
+  `Instrument.objects.filter(symbols__symbol=X)` doesn't resolve — `symbols` is the
+  related_name to the `NSESymbolInstrumentMap` *through-table* (FK to `Instrument`),
+  not directly to `NSESymbols`, so the correct path is one hop deeper:
+  `symbols__symbol__symbol=X` (and `instrument__symbols__symbol__symbol=X` from
+  `CorporateAnnouncement`). Fixed in this plan and in `spec/schema.md` §3.9.
+- Spot-checked all three query patterns in Django shell (after the fix above):
+  - `CorporateAnnouncement.objects.filter(instrument__symbols__symbol__symbol="RELIANCE")` → 16 rows
+  - `CorporateAnnouncement.objects.filter(announced_at__date__range=(d1, d2))` → 2,080 rows
+  - `CorporateAnnouncement.objects.filter(category__name="Outcome of Board Meeting")` → 365 rows
+- Confirmed `logs/pipeline.log` captured all four run phases (started/fetched/
+  ingested/finished) for both runs, and that `spec/schema.md`/`AGENTS.md` docs match
+  the final implementation.
