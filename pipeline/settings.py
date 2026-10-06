@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "dailypricehistory",
     "fnopricehistory",
     "indexpricehistory",
+    "corporateannouncements",
 ]
 
 MIDDLEWARE = [
