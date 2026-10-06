@@ -164,7 +164,7 @@ mergeable unit, in order.
   unfiltered); confirmed `logs/pipeline.log` captured the new
   `corporateannouncements` logger's entries.
 
-### Sprint 4 — Docs
+### Sprint 4 — Docs ✅ done
 
 - New `corporateannouncements/AGENTS.md`, mirroring `indexpricehistory/AGENTS.md`'s
   `## Files` table, referencing a new `spec/schema.md` section.

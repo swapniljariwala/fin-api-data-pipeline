@@ -38,6 +38,7 @@ Current state:
 | [`dailypricehistory/`](dailypricehistory/AGENTS.md) | Django app: daily CM price/OHLC history | [AGENTS.md](dailypricehistory/AGENTS.md) |
 | [`fnopricehistory/`](fnopricehistory/AGENTS.md) | Django app: F&O contract identity + daily OHLC/OI | [AGENTS.md](fnopricehistory/AGENTS.md) |
 | [`indexpricehistory/`](indexpricehistory/AGENTS.md) | Django app: index daily OHLC history | [AGENTS.md](indexpricehistory/AGENTS.md) |
+| [`corporateannouncements/`](corporateannouncements/AGENTS.md) | Django app: NSE corporate announcements feed | [AGENTS.md](corporateannouncements/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
 
@@ -152,6 +153,55 @@ python manage.py ingest_index_bhavcopy                    # latest
 python manage.py ingest_index_bhavcopy --days 5           # last 5 calendar days
 python manage.py ingest_index_bhavcopy --from 2024-08-01 --to 2024-08-31
 ```
+
+### Corporate announcements ingest
+
+```
+python manage.py ingest_corporate_announcements [--latest | --from YYYY-MM-DD | --days N]
+                                                [--to YYYY-MM-DD] [--lookback N]
+                                                [--symbol SYM] [--segment SEGMENT]
+```
+
+| Option | Meaning |
+|---|---|
+| `--latest` | Announcements from the last `--lookback` days. Default mode. |
+| `--from YYYY-MM-DD [--to YYYY-MM-DD]` | Inclusive date range. `--to` defaults to today. |
+| `--days N` | Last `N` calendar days (ending today). |
+| `--lookback N` | How far back `--latest` looks. Default 3. |
+| `--symbol SYM` | Restrict to announcements for one NSE symbol. |
+| `--segment SEGMENT` | NSE segment to query. Default `equities`. |
+
+Unlike the bhavcopy commands, this hits NSE's **live** `corporate_announcements` API
+(via `jugaad-data`'s `NSELive`) rather than downloading a dated archive file, so there
+is no `--data-dir`/`--no-download` and the whole date range is fetched in one API call.
+Rows land in `corporate_announcements` keyed by `seq_id` (NSE's own sequential ID);
+`category` is a FK into `announcement_categories`, resolved via `get_or_create` on the
+raw `desc` string.
+
+Examples:
+
+```bash
+python manage.py ingest_corporate_announcements                        # latest
+python manage.py ingest_corporate_announcements --days 30
+python manage.py ingest_corporate_announcements --symbol RELIANCE --days 30
+python manage.py ingest_corporate_announcements --from 2024-07-01 --to 2024-07-31
+```
+
+Guarantees:
+
+- Idempotent: rows are inserted via `bulk_create(ignore_conflicts=True)` keyed on
+  `seq_id`'s unique constraint, inside one transaction per run; re-running the same
+  range is a no-op.
+- Instrument resolved via `sm_isin`, falling back to `symbol`, reusing the ISIN-first
+  pattern from `ingest_bhavcopy.py`; the symbol-at-filing-time is recorded in
+  `NSESymbolInstrumentMap` so a later symbol rename or ISIN change doesn't orphan
+  historical announcements.
+- A record missing/unparseable `seq_id` or `sort_date` is logged and skipped rather
+  than failing the run.
+- `sort_date`/`exchdisstime` are parsed and stored as timezone-aware IST
+  (`Asia/Kolkata`) datetimes.
+- Progress (INFO) and failures go to console and `logs/pipeline.log`; failures raise
+  `CommandError` (exit 1).
 
 ## Root-level files
 

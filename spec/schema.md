@@ -214,6 +214,67 @@ CREATE INDEX idx_index_price_index  ON index_price_history(index_id);
 - No `settlement_price` or `num_trades` (not in NIFTY Indices data)
 - Simpler identity key: `(index, trade_date)` (no series dimension)
 
+### 3.8 `announcement_categories` — lookup dictionary (seeded from NSE's live feed)
+
+```sql
+CREATE TABLE announcement_categories (
+    id    INTEGER PRIMARY KEY,
+    name  TEXT NOT NULL UNIQUE     -- raw `desc` string from NSE, e.g. 'Board Meeting'
+);
+```
+
+Growable dimension table, not Django `choices` or a bare indexed string — NSE controls
+this vocabulary and adds new values over time, so new categories are picked up via
+`get_or_create` rather than requiring a redeploy. Lives in `corporateannouncements`
+rather than `securityinfo`, since `securityinfo` models instrument *identity*, not
+announcement-domain concepts (same separation `FnoContract`/`Index` already keep).
+
+### 3.9 `corporate_announcements` — NSE corporate announcement feed
+
+```sql
+CREATE TABLE corporate_announcements (
+    id                     INTEGER PRIMARY KEY,
+    instrument_id          INTEGER NOT NULL REFERENCES instruments(id),
+    category_id            INTEGER NOT NULL REFERENCES announcement_categories(id),
+    seq_id                 INTEGER NOT NULL UNIQUE,    -- NSE's own sequential ID
+    announced_at           TEXT NOT NULL,              -- ISO datetime, parsed from `sort_date`
+    exchange_received_at   TEXT,                       -- ISO datetime, parsed from `exchdisstime`
+    attachment_text        TEXT,
+    attachment_url         TEXT,
+    attachment_file_size   TEXT,                       -- kept as given, e.g. '329.92 KB'
+    has_xbrl               INTEGER NOT NULL DEFAULT 0,
+    raw                    TEXT NOT NULL,              -- full source record as JSON
+    ingested_at            TEXT NOT NULL
+);
+
+CREATE INDEX idx_announcement_date           ON corporate_announcements(announced_at);
+CREATE INDEX idx_announcement_instrument     ON corporate_announcements(instrument_id);
+CREATE INDEX idx_announcement_category       ON corporate_announcements(category_id);
+CREATE INDEX idx_annc_instr_date             ON corporate_announcements(instrument_id, announced_at);
+```
+
+Unlike bhavcopies, this is a **live feed, not a dated archive file** (NSE's
+`corporate_announcements` live API), so there is no per-day downloadable file and no
+`bhavcopy_files`-style provenance table — `seq_id` is the natural upsert key instead.
+
+`instrument_id` FKs to `instruments` only (resolved via `sm_isin`, falling back to
+`symbol`) — **no denormalized `symbol` column**. A symbol can drift two ways (same
+ISIN gets a new symbol, or a symbol survives an ISIN change); `NSESymbolInstrumentMap`
+already accumulates every `(symbol, instrument)` pair ever observed, so
+`instruments.filter(symbols__symbol=X)` finds every instrument ever associated with a
+symbol in both drift directions — a bare `symbol` string here would actually handle
+the ISIN-change case worse, not better.
+
+This supports the three query patterns:
+- by symbol → resolve to instrument(s) via the `NSESymbolInstrumentMap` join (uses
+  `idx_annc_instr_date` / `idx_announcement_instrument`)
+- by date range → `idx_announcement_date` / `idx_annc_instr_date`
+- by type → join to `announcement_categories` + `idx_announcement_category`
+
+`raw` keeps the full source record for fields not worth modeling individually
+(`bflag`, `csvName`, `old_new`, `orgid` — all null in observed samples) and as a
+forward-compat safety net if NSE adds fields.
+
 ---
 
 ## 4. Example queries
