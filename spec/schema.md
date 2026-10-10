@@ -275,6 +275,82 @@ This supports the three query patterns:
 (`bflag`, `csvName`, `old_new`, `orgid` — all null in observed samples) and as a
 forward-compat safety net if NSE adds fields.
 
+### 3.10 `mutual_fund_amcs`, `mutual_fund_categories`, `mutual_fund_schemes` — MF dimensions
+
+```sql
+CREATE TABLE mutual_fund_amcs (
+    id    INTEGER PRIMARY KEY,
+    name  TEXT NOT NULL UNIQUE     -- raw AMC name, e.g. 'HDFC Mutual Fund'
+);
+
+CREATE TABLE mutual_fund_categories (
+    id    INTEGER PRIMARY KEY,
+    name  TEXT NOT NULL UNIQUE     -- raw category text, e.g. 'Equity Scheme - Multi Cap Fund'
+);
+
+CREATE TABLE mutual_fund_schemes (
+    id             INTEGER PRIMARY KEY,
+    scheme_code    INTEGER NOT NULL UNIQUE,        -- AMFI identity (stable per plan/option variant)
+    scheme_name    TEXT NOT NULL,
+    plan           TEXT NOT NULL,                  -- 'Direct Plan'/'Regular Plan'; often blank
+    option         TEXT NOT NULL,                  -- 'Growth'/'IDCW'; often blank
+    isin_growth    TEXT,                           -- ISIN (Div Payout / Growth)
+    isin_reinvest  TEXT,                           -- ISIN (Div Reinvestment)
+    scheme_type    TEXT NOT NULL,                  -- 'Open Ended'/'Close Ended'/'Interval Fund'
+    amc_id         INTEGER NOT NULL REFERENCES mutual_fund_amcs(id),
+    category_id    INTEGER NOT NULL REFERENCES mutual_fund_categories(id),
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX uniq_mf_scheme_code             ON mutual_fund_schemes(scheme_code);
+CREATE INDEX idx_mf_scheme_amc                      ON mutual_fund_schemes(amc_id);
+CREATE INDEX idx_mf_scheme_category                 ON mutual_fund_schemes(category_id);
+CREATE INDEX idx_mf_scheme_isin_growth              ON mutual_fund_schemes(isin_growth);
+CREATE INDEX idx_mf_scheme_isin_reinvest            ON mutual_fund_schemes(isin_reinvest);
+```
+
+Identity is AMFI's `scheme_code` (numeric): it is unique per *plan/option* variant and
+stable, while the human-readable attributes (`scheme_name`, `plan`, `option`, ISINs,
+`amc`, `category`, `scheme_type`) drift over time (renames, AMC mergers, SEBI
+recategorization, ISIN add/change). The dimension is updated **latest-wins** at ingest.
+`amc` and `category` are growable lookup tables (AMFI controls both vocabularies and adds
+values over time), resolved via `get_or_create` rather than `choices`, like
+`series`/`announcement_categories`. `isin_growth`/`isin_reinvest` are intentionally
+**not** unique (blank for many rows, and the same ISIN can transiently appear on more
+than one variant). There is no link to `securityinfo.Instrument`: mutual fund units are a
+separate domain, the same separation `FnoContract`/`Index`/announcements keep.
+
+### 3.11 `mutual_fund_nav_history` — AMFI daily NAV report
+
+```sql
+CREATE TABLE mutual_fund_nav_history (
+    id          INTEGER PRIMARY KEY,
+    scheme_id   INTEGER NOT NULL REFERENCES mutual_fund_schemes(id),
+    nav_date    TEXT NOT NULL,          -- ISO date, parsed from `date` (%d-%b-%Y)
+    nav         DECIMAL(18,4)           -- '-'/blank -> NULL
+);
+
+CREATE UNIQUE INDEX uniq_nav_scheme_date ON mutual_fund_nav_history(scheme_id, nav_date);
+CREATE INDEX idx_nav_date                ON mutual_fund_nav_history(nav_date);
+CREATE INDEX idx_nav_scheme              ON mutual_fund_nav_history(scheme_id);
+```
+
+AMFI's `DownloadNAVHistoryReport_Po.aspx` is a **live range report**, not a dated archive
+file, so — like the corporate-announcements feed — there is no provenance table;
+idempotency comes from the row-level unique key `(scheme, nav_date)` via
+`bulk_create(ignore_conflicts=True)`. All three scheme types are stored: Open-Ended
+publishes daily; Close-Ended and Interval Fund appear only on the dates AMFI declares a
+NAV (roughly monthly), so they simply have sparser rows. NAV rows are immutable and at
+tens of millions of rows a per-row `ingested_at` buys nothing the run logs don't already
+give, so none is stored.
+
+This supports the query patterns:
+- NAV history for a scheme → `uniq_nav_scheme_date` / `idx_nav_scheme`
+- latest NAV per scheme → `idx_nav_date`
+- all schemes of an AMC / category → `idx_mf_scheme_amc` / `idx_mf_scheme_category`
+- by ISIN → `idx_mf_scheme_isin_growth` / `idx_mf_scheme_isin_reinvest`
+
 ---
 
 ## 4. Example queries
@@ -348,6 +424,7 @@ split `A/B`, rights `(P−E)/P`) when back-adjusted series are needed.
 |---|---|---|
 | `FnoPriceHistory` + `FnoContract` | Done | Implemented in the `fnopricehistory` app per [`TODO-fno-storage.md`](TODO-fno-storage.md) |
 | `index_price_history` + `indices` | Done | Implemented in the `indexpricehistory` app; covers NIFTY indices from NIFTY Indices website |
+| Mutual fund NAV | Done | Implemented in the `mfnavhistory` app per [`mf-nav-plan.md`](mf-nav-plan.md); AMFI `DownloadNAVHistoryReport_Po.aspx` via `jugaad-data`'s `AMFI.nav_history_raw()` |
 | Debt segment | Later | Own bhavcopy files, own table |
 | `corporate_actions` ingestion + back-adjustment | Later | §6 |
 | BSE sources | Later | Same schema; `source = 'BSE'`, add BSE scrip code to `instrument_tickers` |

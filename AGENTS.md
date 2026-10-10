@@ -15,10 +15,12 @@ Downloads NSE/BSE datasets (via `jugaad-data`) into SQLite, managed with Django.
 
 Current state:
 
-- Django project `pipeline/` with four apps: `securityinfo` (instrument
+- Django project `pipeline/` with five apps: `securityinfo` (instrument
   master: series, instruments, tickers), `dailypricehistory` (CM bhavcopy
   provenance + daily OHLC), `fnopricehistory` (F&O contract identity +
-  daily OHLC/OI), and `indexpricehistory` (index daily OHLC).
+  daily OHLC/OI), `indexpricehistory` (index daily OHLC), and
+  `corporateannouncements` (NSE corporate announcements feed) — plus the
+  `mfnavhistory` app (AMFI mutual fund NAV history).
 - Working `ingest_bhavcopy` management command: downloads NSE CM bhavcopies and
   ingests them into `cm_price_history`. Idempotent and restart-safe; see
   [CLI reference](#cli-reference) below.
@@ -26,6 +28,8 @@ Current state:
   bhavcopies, into `fno_price_history` / `fno_contracts`.
 - Working `ingest_index_bhavcopy` management command: downloads NIFTY index
   bhavcopies and ingests them into `index_price_history` / `indices`.
+- Working `ingest_corporate_announcements` management command (live NSE feed)
+  and `ingest_mf_nav` management command (live AMFI range report).
 - Project-level logging: console + `logs/pipeline.log` (rotated daily, 7 days kept).
 - Object-store upload is a stub (`dailypricehistory/object_store.py`); to be
   implemented later.
@@ -37,6 +41,11 @@ to a shared SQLite DB that a separate Go API service reads. The full deployment
 guide — server layout, virtualenv, DB, cron schedule, deploy/backfill
 procedures, local DB sync for testing, logs, and known issues — is in
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Read it before touching production.
+
+Cron schedule (prod): the three bhavcopy ingests every 15 min in the 04:00–08:00
+IST window, `ingest_corporate_announcements --latest --lookback 1` (a live
+feed) **every minute**, and `ingest_mf_nav --latest --lookback 5` **once daily**
+at 06:30 IST, all wrapped in `flock` with captured output.
 
 Two production gotchas are called out there:
 
@@ -55,6 +64,7 @@ Two production gotchas are called out there:
 | [`fnopricehistory/`](fnopricehistory/AGENTS.md) | Django app: F&O contract identity + daily OHLC/OI | [AGENTS.md](fnopricehistory/AGENTS.md) |
 | [`indexpricehistory/`](indexpricehistory/AGENTS.md) | Django app: index daily OHLC history | [AGENTS.md](indexpricehistory/AGENTS.md) |
 | [`corporateannouncements/`](corporateannouncements/AGENTS.md) | Django app: NSE corporate announcements feed | [AGENTS.md](corporateannouncements/AGENTS.md) |
+| [`mfnavhistory/`](mfnavhistory/AGENTS.md) | Django app: AMFI mutual fund NAV history | [AGENTS.md](mfnavhistory/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
 | [`docs/`](docs/AGENTS.md) | Deployment & operation docs | [AGENTS.md](docs/AGENTS.md) |
@@ -217,6 +227,55 @@ Guarantees:
   than failing the run.
 - `sort_date`/`exchdisstime` are parsed and stored as timezone-aware IST
   (`Asia/Kolkata`) datetimes.
+- Progress (INFO) and failures go to console and `logs/pipeline.log`; failures raise
+  `CommandError` (exit 1).
+
+### Mutual fund NAV ingest
+
+```
+python manage.py ingest_mf_nav [--latest | --from YYYY-MM-DD | --days N]
+                              [--to YYYY-MM-DD] [--lookback N] [--amc CODE]
+                              [--chunk-days N] [--delay SECONDS] [--retries N]
+```
+
+| Option | Meaning |
+|---|---|
+| `--latest` | Fetch `[today - lookback + 1, today]` in one call. Default mode. |
+| `--from YYYY-MM-DD [--to YYYY-MM-DD]` | Inclusive range, chunked and processed **oldest-first**. `--to` defaults to today. |
+| `--days N` | Last `N` calendar days (ending today), oldest-first. |
+| `--lookback N` | How far back `--latest` looks. Default 5. |
+| `--amc CODE` | Restrict the download to one AMFI AMC code (`mf=CODE`). |
+| `--chunk-days N` | Chunk long ranges into windows of this many days. Default 30. |
+| `--delay SECONDS` | Throttle between chunks (0 disables). Default 1.0. |
+| `--retries N` | Total attempts per chunk, backing off by `--delay`. Default 3. |
+
+Like the corporate-announcements command, this hits a **live** AMFI range endpoint
+(`AMFI().nav_history_raw()`, cached by `jugaad-data` under `$J_CACHE_DIR`) rather than a
+dated archive file, so there is no `--data-dir`/`--no-download`. Rows land in
+`mutual_fund_nav_history` keyed by `(scheme, nav_date)`; `scheme` is a `MutualFundScheme`
+identified by AMFI's `scheme_code`, with `amc`/`category` as growable lookup tables.
+There is no provenance table (rolling windows overlap).
+
+Examples:
+
+```bash
+python manage.py ingest_mf_nav                          # latest (last 5 days)
+python manage.py ingest_mf_nav --days 30
+python manage.py ingest_mf_nav --amc 128 --days 30
+python manage.py ingest_mf_nav --from 2026-09-01 --to 2026-09-30
+```
+
+Guarantees:
+
+- Idempotent: rows are inserted via `bulk_create(ignore_conflicts=True)` keyed on
+  `(scheme, nav_date)`, one transaction per chunk; re-running an overlapping window is a
+  no-op for rows already present.
+- Scheme dimension attributes are updated **latest-wins** (ranges processed oldest-first).
+- A row missing/unparseable `scheme_code`, `date`, or `nav` is logged and skipped rather
+  than failing the chunk; blank/`-` NAV is stored as NULL.
+- A failed chunk is retried up to `--retries`; if it still fails the run continues with
+  the remaining chunks and raises `CommandError` at the end (exit 1), so a re-run retries
+  the gap.
 - Progress (INFO) and failures go to console and `logs/pipeline.log`; failures raise
   `CommandError` (exit 1).
 

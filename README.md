@@ -74,6 +74,44 @@ python manage.py ingest_bhavcopy --from 2024-07-01 --to 2024-07-31 --no-download
   on ISIN) and `instrument_tickers` (keyed on `(source, ticker)`, upgraded with
   ISIN when a UDiFF row provides it).
 
+## Ingest mutual fund NAV
+
+The `ingest_mf_nav` command downloads AMFI's daily NAV history range report
+(via `jugaad-data`'s `AMFI().nav_history_raw()`) and ingests it into
+`mutual_fund_nav_history`:
+
+```
+python manage.py ingest_mf_nav [--latest | --from YYYY-MM-DD | --days N]
+                              [--to YYYY-MM-DD] [--lookback N] [--amc CODE]
+                              [--chunk-days N] [--delay SECONDS] [--retries N]
+```
+
+| Option | Meaning |
+|---|---|
+| `--latest` | Fetch `[today - lookback + 1, today]` in one call. Default mode. |
+| `--from YYYY-MM-DD [--to YYYY-MM-DD]` | Inclusive range, chunked and processed oldest-first. `--to` defaults to today. |
+| `--days N` | Last `N` calendar days (ending today). |
+| `--lookback N` | How far back `--latest` looks. Default 5. |
+| `--amc CODE` | Restrict the download to one AMFI AMC code. |
+| `--chunk-days N` | Chunk long ranges into windows of this many days. Default 30. |
+| `--delay SECONDS` | Throttle between chunks (0 disables). Default 1.0. |
+| `--retries N` | Total attempts per chunk, backing off by `--delay`. Default 3. |
+
+```bash
+# Latest NAVs (last 5 days)
+python manage.py ingest_mf_nav
+
+# Last 30 calendar days
+python manage.py ingest_mf_nav --days 30
+
+# One AMC only, a specific range
+python manage.py ingest_mf_nav --amc 128 --from 2026-09-01 --to 2026-09-30
+```
+
+Rows are idempotent on `(scheme, nav_date)`; scheme attributes are updated
+latest-wins as newer rows are seen. See `spec/schema.md` §3.10–3.11 for the
+schema.
+
 ## Logging
 
 - App loggers (INFO) write to both the console and `logs/pipeline.log`.

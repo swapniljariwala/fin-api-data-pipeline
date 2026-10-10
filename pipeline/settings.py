@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "fnopricehistory",
     "indexpricehistory",
     "corporateannouncements",
+    "mfnavhistory",
 ]
 
 MIDDLEWARE = [
@@ -211,6 +212,11 @@ LOGGING = {
             "propagate": False,
         },
         "corporateannouncements": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "mfnavhistory": {
             "handlers": ["console", "file"],
             "level": "INFO",
             "propagate": False,
