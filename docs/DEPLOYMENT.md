@@ -101,14 +101,14 @@ lookback so missed runs self-heal:
 ```
 CRON_TZ=Asia/Kolkata
 */15 4-8 * * * /home/swapnil/apps/fin-api-data-pipeline/env/bin/python /home/swapnil/apps/fin-api-data-pipeline/manage.py  ingest_bhavcopy --latest --lookback 5
-*/15 4-8 * * * /home/swapnil/apps/fin-api-data-pipeline/env/bin/python /home/swapnil/apps/fin-api-data-pipeline/manage.py  ingest_fo_bhavcopy --latest --lookback 5
+*/15 4-8 * * * /home/swapnil/apps/fin-api-data-pipeline/env/bin/python /home/swapnil/apps/fin-api-data-pipeline/manage.py  ingest_fno_bhavcopy --latest --lookback 5
 */15 4-8 * * * /home/swapnil/apps/fin-api-data-pipeline/env/bin/python /home/swapnil/apps/fin-api-data-pipeline/manage.py  ingest_index_bhavcopy --latest --lookback 5
 ```
 
 | Job | Command | Writes to |
 |---|---|---|
 | CM daily prices | `ingest_bhavcopy --latest --lookback 5` | `nse_cm_price_history` |
-| F&O daily prices | `ingest_fo_bhavcopy …` (**broken, see below**) | `fno_price_history` |
+| F&O daily prices | `ingest_fno_bhavcopy --latest --lookback 5` | `fno_price_history` |
 | Index prices | `ingest_index_bhavcopy --latest --lookback 5` | `index_price_history` |
 
 Notes:
@@ -121,25 +121,23 @@ Notes:
   or `purge_duplicate_bhavcopies`. They are currently run manually. See
   [Recommended hardening](#recommended-hardening).
 
-### Known bug: F&O cron uses the wrong command name
+### Historical note: F&O cron typo (fixed 2026-10-10)
 
-`ingest_fo_bhavcopy` is **not a valid command** — the implemented command is
-`ingest_fno_bhavcopy` (extra `n`). Django exits with
-`Unknown command: 'ingest_fo_bhavcopy'. Did you mean ingest_fno_bhavcopy?`, and
-because cron has nowhere to deliver stderr, the job has been failing silently.
-Effect: as of this writing, F&O data is stale (last row 2026-09-24) while CM and
-index data are current. Fix:
-
-```bash
-crontab -e   # change ingest_fo_bhavcopy -> ingest_fno_bhavcopy
-```
-
-and backfill the gap:
+The F&O cron previously invoked `ingest_fo_bhavcopy`, which is **not a valid
+command** — the implemented command is `ingest_fno_bhavcopy` (extra `n`). Django
+exits with `Unknown command: 'ingest_fo_bhavcopy'. Did you mean
+ingest_fno_bhavcopy?`, and because cron has nowhere to deliver stderr, the job
+failed silently from ~2026-09-24 until it was noticed. The crontab was corrected
+and the gap backfilled:
 
 ```bash
-cd /home/swapnil/apps/fin-api-data-pipeline
+# what was run (one-off, already done)
 env/bin/python manage.py ingest_fno_bhavcopy --from 2026-09-25 --to 2026-10-10
 ```
+
+Lesson: because no MTA is installed, a scheduled command that fails *before*
+Django's logging is set up leaves no trace at all. Capture `/bin/sh` output in
+the cron line (see [Recommended hardening](#recommended-hardening)).
 
 ## Deploying a new version
 
@@ -254,7 +252,6 @@ tail -f /home/swapnil/apps/fin-api-data-pipeline/logs/pipeline.log
 
 ## Recommended hardening
 
-- Fix the F&O cron command name (see above); backfill the gap.
 - Wrap each cron entry so output and exit status are captured, e.g.
 
   ```

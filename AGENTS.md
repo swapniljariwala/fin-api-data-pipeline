@@ -40,9 +40,9 @@ procedures, local DB sync for testing, logs, and known issues — is in
 
 Two production gotchas are called out there:
 
-- The F&O cron runs `ingest_fo_bhavcopy` (typo); the real command is
-  `ingest_fno_bhavcopy`, so F&O ingestion silently fails. Fix the crontab and
-  backfill.
+- The F&O cron once ran `ingest_fo_bhavcopy` (typo); the real command is
+  `ingest_fno_bhavcopy`. It silently failed for weeks before being fixed on
+  2026-10-10 and backfilled. There is no MTA on the host, so capture cron output.
 - Production carries an untracked `dailypricehistory` migration `0005` not in
   the repo; reconcile with `makemigrations --check` before deploying.
 
