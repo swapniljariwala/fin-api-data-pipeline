@@ -81,13 +81,15 @@ class IngestMfNavParsingTests(TestCase):
             _record(scheme_code="1", nav="-"),
             _record(scheme_code="2", nav=""),
             _record(scheme_code="3", nav="NA"),
+            _record(scheme_code="4", nav="N.A."),
+            _record(scheme_code="5", nav="n/a"),
         ]
 
         _run(from_date="2026-09-29", to_date="2026-09-30")
 
-        self.assertEqual(MutualFundNavHistory.objects.count(), 3)
+        self.assertEqual(MutualFundNavHistory.objects.count(), 5)
         self.assertEqual(
-            MutualFundNavHistory.objects.filter(nav__isnull=True).count(), 3
+            MutualFundNavHistory.objects.filter(nav__isnull=True).count(), 5
         )
 
     @mock.patch(PATCH_TARGET)

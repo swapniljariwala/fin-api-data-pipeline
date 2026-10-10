@@ -57,6 +57,26 @@ def _clean(value):
     return None if value in ("", "-", "NA", "nan") else value
 
 
+NAV_NULL_SENTINELS = {"", "-", "na", "n/a", "nan", "n.a.", "n.a"}
+
+
+def _parse_nav(raw):
+    """Parse a NAV cell into ``(Decimal | None, ok)``.
+
+    AMFI marks "no NAV" with either ``-``/blank or the ``N.A.`` sentinel; both
+    map to ``None``. Only a genuinely malformed value returns ``ok=False``.
+    """
+    if raw is None:
+        return None, True
+    text = str(raw).strip()
+    if text.lower() in NAV_NULL_SENTINELS:
+        return None, True
+    try:
+        return Decimal(text), True
+    except InvalidOperation:
+        return None, False
+
+
 class Command(BaseCommand):
     help = "Fetch AMFI mutual fund NAV history and ingest it into the database."
 
@@ -279,12 +299,19 @@ class Command(BaseCommand):
     def _ingest_records(self, records):
         rows = []
         skipped = 0
+        bad_nav = 0
         for record in records:
-            row = self._parse_record(record)
-            if row is None:
+            row, reason = self._parse_record(record)
+            if reason is not None:
                 skipped += 1
+                if reason == "bad_nav":
+                    bad_nav += 1
                 continue
             rows.append(row)
+        if bad_nav:
+            logger.warning(
+                "%d row(s) skipped for unparseable nav in this chunk", bad_nav
+            )
 
         with transaction.atomic():
             before = MutualFundNavHistory.objects.count()
@@ -295,43 +322,33 @@ class Command(BaseCommand):
         return inserted, len(rows) - inserted, skipped
 
     def _parse_record(self, record):
+        """Return ``(row, reason)``; ``row`` is None on skip and ``reason`` says why."""
         scheme_code = _clean(record.get("scheme_code"))
         date_raw = _clean(record.get("date"))
         if scheme_code is None or date_raw is None:
             logger.warning("skipping row missing scheme_code/date: %r", record)
-            return None
+            return None, "missing"
         try:
             scheme_code = int(scheme_code)
         except ValueError:
             logger.warning("skipping row with non-numeric scheme_code: %r", record)
-            return None
+            return None, "bad_scheme"
         try:
             nav_date = datetime.strptime(date_raw, "%d-%b-%Y").date()
         except ValueError:
             logger.warning(
                 "skipping scheme %s with unparseable date %r", scheme_code, date_raw
             )
-            return None
+            return None, "bad_date"
 
-        nav_raw = _clean(record.get("nav"))
-        if nav_raw is None:
-            nav = None
-        else:
-            try:
-                nav = Decimal(nav_raw)
-            except InvalidOperation:
-                logger.warning(
-                    "skipping scheme %s on %s with unparseable nav %r",
-                    scheme_code,
-                    nav_date,
-                    nav_raw,
-                )
-                return None
+        nav, nav_ok = _parse_nav(record.get("nav"))
+        if not nav_ok:
+            return None, "bad_nav"
 
         scheme_type = _clean(record.get("scheme_type")) or UNSPECIFIED
         scheme = self._resolve_scheme(record, scheme_code, scheme_type)
 
-        return MutualFundNavHistory(scheme=scheme, nav_date=nav_date, nav=nav)
+        return MutualFundNavHistory(scheme=scheme, nav_date=nav_date, nav=nav), None
 
     # ---------------------------------------------------------- master data
 

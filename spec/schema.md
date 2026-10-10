@@ -328,7 +328,7 @@ CREATE TABLE mutual_fund_nav_history (
     id          INTEGER PRIMARY KEY,
     scheme_id   INTEGER NOT NULL REFERENCES mutual_fund_schemes(id),
     nav_date    TEXT NOT NULL,          -- ISO date, parsed from `date` (%d-%b-%Y)
-    nav         DECIMAL(18,4)           -- '-'/blank -> NULL
+    nav         DECIMAL(18,4)           -- '-', blank, or 'N.A.' -> NULL
 );
 
 CREATE UNIQUE INDEX uniq_nav_scheme_date ON mutual_fund_nav_history(scheme_id, nav_date);

@@ -272,7 +272,7 @@ Guarantees:
   no-op for rows already present.
 - Scheme dimension attributes are updated **latest-wins** (ranges processed oldest-first).
 - A row missing/unparseable `scheme_code`, `date`, or `nav` is logged and skipped rather
-  than failing the chunk; blank/`-` NAV is stored as NULL.
+  than failing the chunk; blank/`-`/`N.A.` NAV is stored as NULL.
 - A failed chunk is retried up to `--retries`; if it still fails the run continues with
   the remaining chunks and raises `CommandError` at the end (exit 1), so a re-run retries
   the gap.
