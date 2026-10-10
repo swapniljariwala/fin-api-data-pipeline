@@ -36,7 +36,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import OperationalError, transaction
 
 from mfnavhistory.models import (
     MutualFundAmc,
@@ -245,7 +245,11 @@ class Command(BaseCommand):
                 continue
             logger.info("Chunk %d/%d: fetched %d row(s)", index, len(chunks), len(records))
 
-            inserted, duplicates, skipped = self._ingest_records(records)
+            result = self._ingest_with_retries(records, delay, retries)
+            if result is None:
+                failed.append((chunk_from, chunk_to))
+                continue
+            inserted, duplicates, skipped = result
             total_inserted += inserted
             total_rows += len(records)
             total_duplicates += duplicates
@@ -296,24 +300,50 @@ class Command(BaseCommand):
 
     # ---------------------------------------------------------------- ingest
 
+    def _ingest_with_retries(self, records, delay, retries):
+        """Ingest one chunk, retrying on transient SQLite lock errors.
+
+        The shared SQLite file is also read by the Go API; a WAL checkpoint can
+        momentarily starve our writer past ``busy_timeout`` and raise
+        ``OperationalError: database is locked``. Retry with backoff, clearing
+        the dimension caches so any rolled-back scheme rows are re-resolved.
+        """
+        for attempt in range(1, retries + 1):
+            try:
+                return self._ingest_records(records)
+            except OperationalError:
+                logger.warning(
+                    "chunk ingest hit a database lock (attempt %d/%d)",
+                    attempt,
+                    retries,
+                    exc_info=True,
+                )
+                self._amc_cache.clear()
+                self._category_cache.clear()
+                self._scheme_cache.clear()
+                if attempt < retries:
+                    time.sleep(max(1.0, delay) * attempt)
+        logger.error("chunk ingest failed after %d attempt(s) on a locked database", retries)
+        return None
+
     def _ingest_records(self, records):
         rows = []
         skipped = 0
         bad_nav = 0
-        for record in records:
-            row, reason = self._parse_record(record)
-            if reason is not None:
-                skipped += 1
-                if reason == "bad_nav":
-                    bad_nav += 1
-                continue
-            rows.append(row)
-        if bad_nav:
-            logger.warning(
-                "%d row(s) skipped for unparseable nav in this chunk", bad_nav
-            )
-
         with transaction.atomic():
+            for record in records:
+                row, reason = self._parse_record(record)
+                if reason is not None:
+                    skipped += 1
+                    if reason == "bad_nav":
+                        bad_nav += 1
+                    continue
+                rows.append(row)
+            if bad_nav:
+                logger.warning(
+                    "%d row(s) skipped for unparseable nav in this chunk", bad_nav
+                )
+
             before = MutualFundNavHistory.objects.count()
             MutualFundNavHistory.objects.bulk_create(
                 rows, ignore_conflicts=True, batch_size=1000

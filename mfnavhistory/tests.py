@@ -3,8 +3,10 @@ from decimal import Decimal
 from unittest import mock
 
 from django.core.management import call_command
+from django.db import OperationalError
 from django.test import TestCase
 
+from mfnavhistory.management.commands.ingest_mf_nav import Command
 from mfnavhistory.models import (
     MutualFundAmc,
     MutualFundCategory,
@@ -162,3 +164,33 @@ class IngestMfNavChunkingTests(TestCase):
         _run(from_date="2026-09-01", to_date="2026-09-02", amc="128")
 
         fetch.assert_called_once_with(date(2026, 9, 1), date(2026, 9, 2), mf="128")
+
+
+class IngestMfNavLockRetryTests(TestCase):
+    @mock.patch("mfnavhistory.management.commands.ingest_mf_nav.time.sleep")
+    @mock.patch.object(Command, "_ingest_records")
+    @mock.patch(PATCH_TARGET)
+    def test_retries_chunk_on_database_lock(self, fetch, ingest, _sleep):
+        fetch.return_value = [_record()]
+        ingest.side_effect = [
+            OperationalError("database is locked"),
+            (1, 0, 0),
+        ]
+
+        _run(from_date="2026-09-29", to_date="2026-09-30")
+
+        self.assertEqual(ingest.call_count, 2)
+
+    @mock.patch("mfnavhistory.management.commands.ingest_mf_nav.time.sleep")
+    @mock.patch.object(Command, "_ingest_records")
+    @mock.patch(PATCH_TARGET)
+    def test_gives_up_after_retries(self, fetch, ingest, _sleep):
+        from django.core.management.base import CommandError
+
+        fetch.return_value = [_record()]
+        ingest.side_effect = OperationalError("database is locked")
+
+        with self.assertRaises(CommandError):
+            _run(from_date="2026-09-29", to_date="2026-09-30")
+
+        self.assertEqual(ingest.call_count, 3)

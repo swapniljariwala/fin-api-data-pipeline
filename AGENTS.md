@@ -273,9 +273,10 @@ Guarantees:
 - Scheme dimension attributes are updated **latest-wins** (ranges processed oldest-first).
 - A row missing/unparseable `scheme_code`, `date`, or `nav` is logged and skipped rather
   than failing the chunk; blank/`-`/`N.A.` NAV is stored as NULL.
-- A failed chunk is retried up to `--retries`; if it still fails the run continues with
-  the remaining chunks and raises `CommandError` at the end (exit 1), so a re-run retries
-  the gap.
+- A failed chunk is retried up to `--retries` (including transient
+  `database is locked` errors from the Go API's concurrent reads); if it still
+  fails the run continues with the remaining chunks and raises `CommandError`
+  at the end (exit 1), so a re-run retries the gap.
 - Progress (INFO) and failures go to console and `logs/pipeline.log`; failures raise
   `CommandError` (exit 1).
 
