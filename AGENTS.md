@@ -30,6 +30,22 @@ Current state:
 - Object-store upload is a stub (`dailypricehistory/object_store.py`); to be
   implemented later.
 
+## Deployment & operations
+
+The pipeline runs on the `finapi` host as scheduled management commands writing
+to a shared SQLite DB that a separate Go API service reads. The full deployment
+guide — server layout, virtualenv, DB, cron schedule, deploy/backfill
+procedures, local DB sync for testing, logs, and known issues — is in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Read it before touching production.
+
+Two production gotchas are called out there:
+
+- The F&O cron runs `ingest_fo_bhavcopy` (typo); the real command is
+  `ingest_fno_bhavcopy`, so F&O ingestion silently fails. Fix the crontab and
+  backfill.
+- Production carries an untracked `dailypricehistory` migration `0005` not in
+  the repo; reconcile with `makemigrations --check` before deploying.
+
 ## Folder index
 
 | Path | What it is | Details |
@@ -41,6 +57,7 @@ Current state:
 | [`corporateannouncements/`](corporateannouncements/AGENTS.md) | Django app: NSE corporate announcements feed | [AGENTS.md](corporateannouncements/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
+| [`docs/`](docs/AGENTS.md) | Deployment & operation docs | [AGENTS.md](docs/AGENTS.md) |
 
 ## CLI reference
 
