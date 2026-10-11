@@ -78,6 +78,24 @@ def _int(value):
     return int(value) if value is not None else None
 
 
+def _parse_trade_date(value):
+    """Parse an index bhavcopy date cell.
+
+    The NIFTY indices CSV writes dates as ``DD-MM-YYYY`` (e.g. ``09-01-2026``);
+    accept ISO ``YYYY-MM-DD`` as well for robustness. Returns ``None`` when the
+    value is empty or unparseable.
+    """
+    value = _clean(value)
+    if value is None:
+        return None
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 _LOCAL_HOLIDAYS = None
 
 
@@ -419,30 +437,6 @@ class Command(BaseCommand):
 
     # ---------------------------------------------------------------- parsing
 
-    def _file_date(self, raw, expected, name):
-        """The trade date embedded in the file, not the filename.
-
-        Index bhavcopies have a consistent date format embedded in them.
-        """
-        value = _clean(raw)
-        try:
-            # Try ISO format first
-            parsed = date.fromisoformat(value)
-        except (ValueError, TypeError):
-            # Fallback to the filename date if parsing fails
-            logger.warning(
-                "%s: no trade date in file; assuming %s from the filename",
-                name, expected,
-            )
-            return expected
-        if parsed != expected:
-            logger.warning(
-                "%s: file holds %s data, not %s; storing under the "
-                "file's date",
-                name, parsed, expected,
-            )
-        return parsed
-
     def _parse_rows(self, path, expected_date):
         rows = []
         with open(path, newline="", encoding="utf-8") as fh:
@@ -451,7 +445,15 @@ class Command(BaseCommand):
                 row = self._parse_row(raw, expected_date)
                 if row is not None:
                     rows.append(row)
-        return rows, expected_date
+        # The file's provenance date comes from its content (``Index Date``),
+        # not the filename; fall back to the expected date for an empty file.
+        if rows and rows[0]["trade_date"] != expected_date:
+            logger.warning(
+                "%s: file holds %s data, not %s; storing under the file's date",
+                path.name, rows[0]["trade_date"], expected_date,
+            )
+        file_date = rows[0]["trade_date"] if rows else expected_date
+        return rows, file_date
 
     def _parse_row(self, raw, expected_date):
         """Parse one index row from the NIFTY indices CSV."""
@@ -459,25 +461,19 @@ class Command(BaseCommand):
         if not index_name:
             return None
 
-        # Extract date from the row (could be in different formats)
-        date_str = _clean(raw.get("Date")) or _clean(raw.get("TradDt"))
-        if date_str:
-            try:
-                trade_date = date.fromisoformat(date_str)
-            except (ValueError, TypeError):
-                trade_date = expected_date
-        else:
-            trade_date = expected_date
+        # The file's own date (``Index Date``, DD-MM-YYYY); fall back to the
+        # expected/filename date if it is missing or unparseable.
+        trade_date = _parse_trade_date(raw.get("Index Date")) or expected_date
 
         return {
             "ticker": index_name,
             "trade_date": trade_date,
-            "open": _dec(raw.get("Open")),
-            "high": _dec(raw.get("High")),
-            "low": _dec(raw.get("Low")),
-            "close": _dec(raw.get("Close")),
+            "open": _dec(raw.get("Open Index Value")),
+            "high": _dec(raw.get("High Index Value")),
+            "low": _dec(raw.get("Low Index Value")),
+            "close": _dec(raw.get("Closing Index Value")),
             "volume": _int(raw.get("Volume")),
-            "turnover": _dec(raw.get("Turnover")),
+            "turnover": _dec(raw.get("Turnover (Rs. Cr.)")),
         }
 
     # --------------------------------------------------------------- ingesting

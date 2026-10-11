@@ -1,9 +1,23 @@
-from django.test import TestCase
+import tempfile
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
+from django.test import TestCase
+
+from indexpricehistory.management.commands.ingest_index_bhavcopy import Command
 from indexpricehistory.models import Index, IndexPriceHistory
 from dailypricehistory.models import BhavcopyFile
+
+REAL_HEADER = (
+    "Index Name,Index Date,Open Index Value,High Index Value,Low Index Value,"
+    "Closing Index Value,Points Change,Change(%),Volume,Turnover (Rs. Cr.),"
+    "P/E,P/B,Div Yield\n"
+)
+REAL_ROW = (
+    "Nifty 50,09-01-2026,25840.4,25940.6,25623,25683.3,-193.55,-.75,"
+    "348757262,27486.64,22.36,3.49,1.31\n"
+)
 
 
 class IndexModelTests(TestCase):
@@ -68,3 +82,42 @@ class IndexModelTests(TestCase):
                 trade_date=date(2026, 9, 25),
                 close=Decimal("19555.00"),
             )
+
+
+class IndexBhavcopyParseTests(TestCase):
+    """Regression tests for the real NIFTY indices CSV column names."""
+
+    def test_parse_rows_maps_real_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ind_close_all_09012026.csv"
+            path.write_text(REAL_HEADER + REAL_ROW, encoding="utf-8")
+
+            command = Command()
+            rows, file_date = command._parse_rows(path, date(2026, 1, 9))
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["ticker"], "Nifty 50")
+        self.assertEqual(row["trade_date"], date(2026, 1, 9))
+        self.assertEqual(file_date, date(2026, 1, 9))
+        self.assertEqual(row["open"], Decimal("25840.4"))
+        self.assertEqual(row["high"], Decimal("25940.6"))
+        self.assertEqual(row["low"], Decimal("25623"))
+        self.assertEqual(row["close"], Decimal("25683.3"))
+        self.assertEqual(row["volume"], 348757262)
+        self.assertEqual(row["turnover"], Decimal("27486.64"))
+
+    def test_parse_row_keeps_filename_date_when_index_date_unparseable(self):
+        command = Command()
+        raw = {
+            "Index Name": "Nifty 50",
+            "Index Date": "",
+            "Open Index Value": "1",
+            "High Index Value": "2",
+            "Low Index Value": "3",
+            "Closing Index Value": "4",
+            "Volume": "5",
+            "Turnover (Rs. Cr.)": "6",
+        }
+        row = command._parse_row(raw, date(2026, 1, 9))
+        self.assertEqual(row["trade_date"], date(2026, 1, 9))
