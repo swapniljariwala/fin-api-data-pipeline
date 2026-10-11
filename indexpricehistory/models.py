@@ -37,6 +37,9 @@ class IndexPriceHistory(models.Model):
     close = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
     volume = models.BigIntegerField(null=True, blank=True)
     turnover = models.DecimalField(max_digits=22, decimal_places=2, null=True, blank=True)
+    pe_ratio = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    pb_ratio = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    div_yield = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
     file = models.ForeignKey(
         BhavcopyFile,
         on_delete=models.PROTECT,

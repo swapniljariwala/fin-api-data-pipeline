@@ -68,6 +68,21 @@ class IndexModelTests(TestCase):
         self.assertEqual(price.index, self.index)
         self.assertEqual(price.close, Decimal("19550.25"))
 
+    def test_index_price_history_valuation_fields(self):
+        """Test the nullable valuation fields (P/E, P/B, Div Yield)."""
+        price = IndexPriceHistory.objects.create(
+            index=self.index,
+            trade_date=date(2026, 9, 25),
+            close=Decimal("19550.25"),
+            pe_ratio=Decimal("22.3600"),
+            pb_ratio=Decimal("3.4900"),
+            div_yield=Decimal("1.3100"),
+        )
+        price.refresh_from_db()
+        self.assertEqual(price.pe_ratio, Decimal("22.3600"))
+        self.assertEqual(price.pb_ratio, Decimal("3.4900"))
+        self.assertEqual(price.div_yield, Decimal("1.3100"))
+
     def test_index_price_history_unique_constraint(self):
         """Test that (index, trade_date) is unique."""
         IndexPriceHistory.objects.create(
@@ -106,6 +121,9 @@ class IndexBhavcopyParseTests(TestCase):
         self.assertEqual(row["close"], Decimal("25683.3"))
         self.assertEqual(row["volume"], 348757262)
         self.assertEqual(row["turnover"], Decimal("27486.64"))
+        self.assertEqual(row["pe_ratio"], Decimal("22.36"))
+        self.assertEqual(row["pb_ratio"], Decimal("3.49"))
+        self.assertEqual(row["div_yield"], Decimal("1.31"))
 
     def test_parse_row_keeps_filename_date_when_index_date_unparseable(self):
         command = Command()
@@ -121,3 +139,55 @@ class IndexBhavcopyParseTests(TestCase):
         }
         row = command._parse_row(raw, date(2026, 1, 9))
         self.assertEqual(row["trade_date"], date(2026, 1, 9))
+
+    def test_parse_row_missing_valuation_columns_is_none(self):
+        command = Command()
+        raw = {
+            "Index Name": "Nifty 50",
+            "Index Date": "09-01-2026",
+            "Open Index Value": "1",
+            "High Index Value": "2",
+            "Low Index Value": "3",
+            "Closing Index Value": "4",
+            "Volume": "5",
+            "Turnover (Rs. Cr.)": "6",
+        }
+        row = command._parse_row(raw, date(2026, 1, 9))
+        self.assertIsNone(row["pe_ratio"])
+        self.assertIsNone(row["pb_ratio"])
+        self.assertIsNone(row["div_yield"])
+
+
+class IndexValuationRefreshTests(TestCase):
+    """Tests for the --refresh-valuations upsert path."""
+
+    @staticmethod
+    def _write(path, pe, pb, dy, close):
+        row = (
+            "Nifty 50,09-01-2026,25840.4,25940.6,25623,"
+            f"{close},-193.55,-.75,348757262,27486.64,{pe},{pb},{dy}\n"
+        )
+        path.write_text(REAL_HEADER + row, encoding="utf-8")
+
+    def test_refresh_updates_only_valuations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ind_close_all_09012026.csv"
+            command = Command()
+            command._index_cache = {}
+
+            self._write(path, "22.36", "3.49", "1.31", "25683.3")
+            command._ingest_file(path, date(2026, 1, 9))
+
+            # Same file re-downloaded with changed valuations and a changed
+            # close that must be left untouched.
+            self._write(path, "25.00", "4.00", "1.50", "99999.0")
+            command._refresh_valuations(path, date(2026, 1, 9))
+
+        self.assertEqual(IndexPriceHistory.objects.count(), 1)
+        self.assertEqual(BhavcopyFile.objects.count(), 1)
+        row = IndexPriceHistory.objects.get()
+        self.assertEqual(row.pe_ratio, Decimal("25.00"))
+        self.assertEqual(row.pb_ratio, Decimal("4.00"))
+        self.assertEqual(row.div_yield, Decimal("1.50"))
+        self.assertEqual(row.close, Decimal("25683.3"))
+

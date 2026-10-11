@@ -201,6 +201,9 @@ CREATE TABLE index_price_history (
     close         DECIMAL(18,4),
     volume        INTEGER,                  -- Trading volume
     turnover      DECIMAL(22,2),            -- In full rupees
+    pe_ratio      DECIMAL(12,4),            -- P/E from the bhavcopy
+    pb_ratio      DECIMAL(12,4),            -- P/B from the bhavcopy
+    div_yield     DECIMAL(12,4),            -- Div Yield %, stored as the source value
     file_id       INTEGER REFERENCES bhavcopy_files(id),
     UNIQUE (index_id, trade_date)
 );
@@ -213,6 +216,11 @@ CREATE INDEX idx_index_price_index  ON index_price_history(index_id);
 - No `series` FK (indices don't have trading series like stocks)
 - No `settlement_price` or `num_trades` (not in NIFTY Indices data)
 - Simpler identity key: `(index, trade_date)` (no series dimension)
+
+The three valuation columns (`pe_ratio`, `pb_ratio`, `div_yield`) come from the
+`P/E`, `P/B` and `Div Yield` columns of the daily NIFTY indices bhavcopy; `-`/`NA`
+map to `NULL`. They are populated on every ingest and can be backfilled for
+already-ingested dates with `ingest_index_bhavcopy --refresh-valuations`.
 
 ### 3.8 `announcement_categories` — lookup dictionary (seeded from NSE's live feed)
 

@@ -164,6 +164,7 @@ ingest, not inline in it.
 python manage.py ingest_index_bhavcopy [--latest | --from YYYY-MM-DD | --days N]
                                        [--to YYYY-MM-DD] [--data-dir PATH]
                                        [--no-download] [--lookback N]
+                                       [--refresh-valuations]
 ```
 
 Same options and guarantees as `ingest_bhavcopy` above (restart-safe,
@@ -171,7 +172,13 @@ holiday-aware, file-date-authoritative), applied to NIFTY indices:
 downloads via NIFTY Indices website (https://www.niftyindices.com) using
 `bhavcopy_index_save`, files named `ind_close_all_DDMMYYYY.csv`, rows land
 in `index_price_history` keyed by `(index, trade_date)` where `index` is
-identified by `(source, ticker)`, e.g., `('NSE', 'NIFTY 50')`.
+identified by `(source, ticker)`, e.g., `('NSE', 'NIFTY 50')`. The bhavcopy's
+`P/E`, `P/B` and `Div Yield` columns are stored in the nullable
+`pe_ratio`/`pb_ratio`/`div_yield` fields.
+
+`--refresh-valuations` (requires `--from/--to` or `--days`) re-downloads
+already-ingested files and upserts **only** the three valuation columns, for
+the one-time history backfill; OHLC and the rest are left untouched.
 
 Examples:
 
@@ -179,6 +186,8 @@ Examples:
 python manage.py ingest_index_bhavcopy                    # latest
 python manage.py ingest_index_bhavcopy --days 5           # last 5 calendar days
 python manage.py ingest_index_bhavcopy --from 2024-08-01 --to 2024-08-31
+python manage.py ingest_index_bhavcopy --from 2016-10-06 --to 2026-10-09 \
+    --refresh-valuations --delay 2 --retries 3            # valuation backfill
 ```
 
 ### Corporate announcements ingest

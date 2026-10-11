@@ -205,6 +205,35 @@ env/bin/python manage.py ingest_mf_nav --days 30
 env/bin/python manage.py ingest_mf_nav --amc 128 --from 2026-09-01 --to 2026-09-30
 ```
 
+### Index valuations (P/E, P/B, Div Yield)
+
+`index_price_history` has three nullable valuation columns (`pe_ratio`,
+`pb_ratio`, `div_yield`) populated from the `P/E`/`P/B`/`Div Yield` columns that
+the daily NIFTY indices bhavcopy already carries. New daily ingests fill them
+with no cron change; already-ingested history is filled by a one-off backfill
+that re-downloads each file and upserts **only** the three columns (OHLC is left
+untouched):
+
+```bash
+# one-time backfill 2016-10-06 -> present, detached (migration 0002 first)
+env/bin/python manage.py migrate
+ssh finapi 'cd /home/swapnil/apps/fin-api-data-pipeline && \
+  nohup env/bin/python manage.py ingest_index_bhavcopy \
+  --from 2016-10-06 --to "$(date +%F)" \
+  --refresh-valuations --delay 2 --retries 3 \
+  > logs/backfill_index_pe.log 2>&1 &'
+
+# progress
+ssh finapi 'tail -f /home/swapnil/apps/fin-api-data-pipeline/logs/backfill_index_pe.log'
+```
+
+~2,391 files at ~2s each ⇒ roughly 1–2 hours. Verify afterward:
+
+```bash
+sqlite3 db/db.sqlite3 \
+  "SELECT count(*) FROM index_price_history WHERE pe_ratio IS NOT NULL;"
+```
+
 
 ### Historical note: F&O cron typo (fixed 2026-10-10)
 

@@ -25,6 +25,9 @@ Mode selection (exactly one):
   clear of the rate limit (default: 2.0; 0 disables the wait).
 * ``--retries N``: retry a failed download up to N times total, backing off by
   ``--delay`` between attempts (default: 3).
+* ``--refresh-valuations``: with ``--from/--to`` or ``--days``, re-download
+  already-ingested files and upsert only the ``P/E``/``P/B``/``Div Yield``
+  columns (used for the one-time valuation backfill).
 
 Known NSE trading holidays (from the local calendar shipped with ``jugaad-data``
 and NSE's live holiday API for the current year) are skipped before any
@@ -181,6 +184,12 @@ class Command(BaseCommand):
             help="retry a failed download up to N times total, "
             "backing off by --delay between attempts (default: 3)",
         )
+        parser.add_argument(
+            "--refresh-valuations",
+            action="store_true",
+            help="re-download already-ingested files and refresh only the "
+            "P/E, P/B and Div Yield columns (requires --from/--to or --days)",
+        )
 
     def handle(self, *args, **options):
         self.data_dir = Path(options["data_dir"] or settings.BASE_DIR / "data")
@@ -194,6 +203,7 @@ class Command(BaseCommand):
         self.retries = options["retries"]
         if self.retries < 1:
             raise CommandError("--retries must be at least 1")
+        self.refresh_valuations = options["refresh_valuations"]
         self._api_calls = 0
         self._download_ok = True
         self._holiday_dates = None  # lazy set of NSE trading holidays
@@ -215,6 +225,11 @@ class Command(BaseCommand):
             if options["to_date"]:
                 raise CommandError("--to requires --from")
             mode = "latest"
+
+        if self.refresh_valuations and mode == "latest":
+            raise CommandError(
+                "--refresh-valuations requires --from/--to or --days"
+            )
 
         logger.info(
             "Index bhavcopy ingest job started (mode=%s, download=%s)",
@@ -281,16 +296,17 @@ class Command(BaseCommand):
         )
 
     def _run_dates(self, targets):
-        summary = {"ingested": 0, "skipped": 0, "failed": 0}
+        summary = {"ingested": 0, "skipped": 0, "failed": 0, "refreshed": 0}
         logger.info(
             "Processing %d trading day(s), oldest first", len(targets)
         )
         for day in targets:
-            if self._already_ingested(day):
+            already = self._already_ingested(day)
+            if already and not self.refresh_valuations:
                 logger.info("%s: already ingested, skipping", day)
                 summary["skipped"] += 1
                 continue
-            if not self.no_download and self._is_nse_holiday(day):
+            if not already and not self.no_download and self._is_nse_holiday(day):
                 logger.info(
                     "%s: NSE trading holiday, skipping download", day
                 )
@@ -298,29 +314,35 @@ class Command(BaseCommand):
                 continue
             try:
                 self._download_ok = True
-                path = self._obtain_file(day)
+                path = self._obtain_file(day, skip_if_present=not already)
                 if path is None:
                     if self._download_ok:
                         logger.info(
                             "%s: no index bhavcopy available (holiday?)", day
                         )
                     continue
-                self._ingest_file(path, day)
-                summary["ingested"] += 1
+                if already:
+                    self._refresh_valuations(path, day)
+                    summary["refreshed"] += 1
+                else:
+                    self._ingest_file(path, day)
+                    summary["ingested"] += 1
             except Exception:  # keep the run going; restart re-tries
                 summary["failed"] += 1
                 logger.exception("%s: ingestion failed", day)
         if summary["failed"]:
             logger.error(
-                "Job finished with failures: %d ingested, %d skipped, %d failed",
-                summary["ingested"], summary["skipped"], summary["failed"],
+                "Job finished with failures: %d ingested, %d refreshed, "
+                "%d skipped, %d failed",
+                summary["ingested"], summary["refreshed"],
+                summary["skipped"], summary["failed"],
             )
             raise CommandError(
                 f"{summary['failed']} file(s) failed; re-run to retry"
             )
         logger.info(
-            "Job completed successfully: %d ingested, %d skipped",
-            summary["ingested"], summary["skipped"],
+            "Job completed successfully: %d ingested, %d refreshed, %d skipped",
+            summary["ingested"], summary["refreshed"], summary["skipped"],
         )
 
     # ------------------------------------------------------------- downloading
@@ -333,7 +355,7 @@ class Command(BaseCommand):
     def _file_name(self, day):
         return f"ind_close_all_{day.strftime('%d%m%Y')}.csv"
 
-    def _obtain_file(self, day):
+    def _obtain_file(self, day, skip_if_present=True):
         """Return the path of the index bhavcopy for ``day``, or None if unavailable."""
         path = self.data_dir / self._file_name(day)
         if self.no_download:
@@ -342,7 +364,7 @@ class Command(BaseCommand):
             self._throttle()
             try:
                 saved = self.archives.bhavcopy_index_save(
-                    day, str(self.data_dir), skip_if_present=True
+                    day, str(self.data_dir), skip_if_present=skip_if_present
                 )
                 break
             except Exception as exc:
@@ -474,6 +496,9 @@ class Command(BaseCommand):
             "close": _dec(raw.get("Closing Index Value")),
             "volume": _int(raw.get("Volume")),
             "turnover": _dec(raw.get("Turnover (Rs. Cr.)")),
+            "pe_ratio": _dec(raw.get("P/E")),
+            "pb_ratio": _dec(raw.get("P/B")),
+            "div_yield": _dec(raw.get("Div Yield")),
         }
 
     # --------------------------------------------------------------- ingesting
@@ -506,6 +531,9 @@ class Command(BaseCommand):
                         close=row["close"],
                         volume=row["volume"],
                         turnover=row["turnover"],
+                        pe_ratio=row["pe_ratio"],
+                        pb_ratio=row["pb_ratio"],
+                        div_yield=row["div_yield"],
                         file=file_obj,
                     )
                 )
@@ -520,6 +548,55 @@ class Command(BaseCommand):
         )
         path.unlink(missing_ok=True)
         logger.info("%s: removed from disk", path.name)
+
+    def _refresh_valuations(self, path, trade_date):
+        """Upsert only the valuation columns of an already-ingested file.
+
+        The ``BhavcopyFile`` provenance row (unique, and PROTECTed by the
+        existing price rows) is reused rather than recreated; only
+        ``pe_ratio``/``pb_ratio``/``div_yield`` are written, leaving OHLC and
+        the other columns untouched. Rows for dates never ingested before are
+        created as gaps, matching the normal full-ingest behaviour.
+        """
+        file_name = path.name
+        try:
+            file_obj = BhavcopyFile.objects.get(file_name=file_name)
+        except BhavcopyFile.DoesNotExist:
+            logger.info(
+                "%s: no provenance row, falling back to full ingest", file_name
+            )
+            return self._ingest_file(path, trade_date)
+        logger.info("Refreshing valuations in %s", file_name)
+        with transaction.atomic():
+            rows, _ = self._parse_rows(path, trade_date)
+            self._index_cache = {}
+            before = IndexPriceHistory.objects.count()
+            price_rows = []
+            for row in rows:
+                index = self._resolve_index(row["ticker"])
+                price_rows.append(
+                    IndexPriceHistory(
+                        index=index,
+                        trade_date=row["trade_date"],
+                        pe_ratio=row["pe_ratio"],
+                        pb_ratio=row["pb_ratio"],
+                        div_yield=row["div_yield"],
+                        file=file_obj,
+                    )
+                )
+            IndexPriceHistory.objects.bulk_create(
+                price_rows,
+                update_conflicts=True,
+                update_fields=["pe_ratio", "pb_ratio", "div_yield"],
+                unique_fields=["index", "trade_date"],
+                batch_size=1000,
+            )
+            after = IndexPriceHistory.objects.count()
+        path.unlink(missing_ok=True)
+        logger.info(
+            "%s: refreshed %d valuation row(s) (%d new), removed from disk",
+            file_name, len(rows), after - before,
+        )
 
     def _resolve_index(self, ticker):
         """Return or create the Index for a ticker."""
