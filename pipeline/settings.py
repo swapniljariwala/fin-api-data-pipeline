@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 import os
 from pathlib import Path
 
+import django
+from django.db.backends.signals import connection_created
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -90,20 +92,36 @@ WSGI_APPLICATION = "pipeline.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+_SQLITE_PRAGMAS = (
+    "PRAGMA journal_mode=WAL;"
+    "PRAGMA synchronous=NORMAL;"
+    "PRAGMA busy_timeout=5000;"       # <-- important for Litestream
+    "PRAGMA mmap_size=134217728;"
+    "PRAGMA cache_size=-64000;"
+    "PRAGMA foreign_keys=ON;"
+)
+
+# Django >= 5.1 applies SQLite pragmas via the connection option init_command;
+# older versions don't support it, so apply the same pragmas on connect.
+_DB_OPTIONS = {}
+if django.VERSION >= (5, 1):
+    _DB_OPTIONS["init_command"] = _SQLITE_PRAGMAS
+else:
+
+    def _apply_sqlite_pragmas(sender, connection, **kwargs):
+        if connection.vendor == "sqlite":
+            with connection.cursor() as cursor:
+                for pragma in _SQLITE_PRAGMAS.split(";"):
+                    if pragma.strip():
+                        cursor.execute(pragma)
+
+    connection_created.connect(_apply_sqlite_pragmas)
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": os.environ.get("PIPELINE_DB_PATH", str(BASE_DIR / "db" / "db.sqlite3")),
-		"OPTIONS": {
-            "init_command": (
-                "PRAGMA journal_mode=WAL;"
-                "PRAGMA synchronous=NORMAL;"
-                "PRAGMA busy_timeout=5000;"       # <-- important for Litestream
-                "PRAGMA mmap_size=134217728;"
-                "PRAGMA cache_size=-64000;"
-                "PRAGMA foreign_keys=ON;"
-            ),
-        },
+        "OPTIONS": _DB_OPTIONS,
     }
 }
 
@@ -229,3 +247,8 @@ LOGGING = {
         },
     },
 }
+
+
+# Pinned so generated migrations don't depend on the Django version's default
+# (AutoField on older Django, BigAutoField on 6.x).
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
