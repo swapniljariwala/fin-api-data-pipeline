@@ -81,16 +81,22 @@ env/bin/pip install -r requirements.txt
 
 ## Database
 
-- File: `/home/swapnil/apps/fin-api-data-pipeline/db/db.sqlite3`.
+- File: `/mnt/blockstorage/db/db.sqlite3`, set by `PIPELINE_DB_PATH` in the
+  server's `.env` (`settings.py` falls back to `<repo>/db/db.sqlite3`, which does
+  not exist on the host).
 - Engine/config in `pipeline/settings.py`: SQLite with WAL, `synchronous=NORMAL`,
   `busy_timeout=5000`, `mmap_size`, `cache_size`, `foreign_keys=ON`. The
   `busy_timeout` matters because the Go API reads the same file concurrently.
-- Size is large (≈2 GB); the WAL can hold hundreds of MB between checkpoints.
+- Size is large (≈4.5 GB); the WAL can hold hundreds of MB between checkpoints.
 - Backup/snapshot uses SQLite's own tooling (never copy a live WAL DB by hand):
 
   ```bash
-  sqlite3 db/db.sqlite3 "VACUUM INTO '/home/swapnil/db_snapshot.sqlite3'"
+  sqlite3 /mnt/blockstorage/db/db.sqlite3 ".backup /mnt/blockstorage/db_snapshot.sqlite3"
   ```
+
+  `.backup` is an online, consistent copy with no compaction. Use
+  `VACUUM INTO '<path>'` instead if you want a compacted copy. Stage snapshots
+  on `/mnt/blockstorage`, not in the home directory (the root volume is small).
 
 ## Scheduled jobs (cron)
 
@@ -320,22 +326,24 @@ Testing against real data means pulling the prod SQLite file down. Always take a
 consistent snapshot on the server; do not rsync a live WAL database.
 
 ```bash
-# 1. On the server: compact + consistent single-file snapshot
-ssh finapi 'cd /home/swapnil/apps/fin-api-data-pipeline && \
-  sqlite3 db/db.sqlite3 "VACUUM INTO '\''/home/swapnil/db_snapshot.sqlite3'\''"'
+# 1. On the server: consistent single-file snapshot (no compaction), on the
+#    block-storage volume (home is on a small root volume)
+ssh finapi 'sqlite3 /mnt/blockstorage/db/db.sqlite3 ".backup /mnt/blockstorage/db_snapshot.sqlite3"'
 
-# 2. On your machine: pull it into the local db/ (git-ignored) directory
+# 2. On your machine: drop stale WAL files, then pull into the local db/ (git-ignored) directory
+rm -f db/db.sqlite3-wal db/db.sqlite3-shm
 rsync -avz --progress --partial \
-  finapi:/home/swapnil/db_snapshot.sqlite3 \
+  finapi:/mnt/blockstorage/db_snapshot.sqlite3 \
   db/db.sqlite3
 
 # 3. On the server: remove the snapshot
-ssh finapi 'rm -f /home/swapnil/db_snapshot.sqlite3'
+ssh finapi 'rm -f /mnt/blockstorage/db_snapshot.sqlite3'
 ```
 
 The local file is at `db/db.sqlite3`, exactly where `pipeline/settings.py`
 expects it, so local management commands/test runs use the real data. The
-snapshot is ~1.6 GB; a `VACUUM INTO` takes under a minute.
+snapshot is ~4.5 GB. The copy is in WAL mode, so `sqlite3 -readonly` cannot open
+it (no `-shm`); open it normally.
 
 Quick sanity check after syncing:
 
