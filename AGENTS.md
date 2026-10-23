@@ -30,6 +30,10 @@ Current state:
   bhavcopies and ingests them into `index_price_history` / `indices`.
 - Working `ingest_corporate_announcements` management command (live NSE feed)
   and `ingest_mf_nav` management command (live AMFI range report).
+- Working `ingest_corporate_actions` management command (live NSE feed, by
+  ex-date) into the `corporateactions` app: fixed-logic parsing of dividends,
+  splits, bonus, rights etc., plus a price sanity check that sends anything
+  doubtful to `needs_review`.
 - Project-level logging: console + `logs/pipeline.log` (rotated daily, 7 days kept).
 - Object-store upload is a stub (`dailypricehistory/object_store.py`); to be
   implemented later.
@@ -64,6 +68,7 @@ Two production gotchas are called out there:
 | [`fnopricehistory/`](fnopricehistory/AGENTS.md) | Django app: F&O contract identity + daily OHLC/OI | [AGENTS.md](fnopricehistory/AGENTS.md) |
 | [`indexpricehistory/`](indexpricehistory/AGENTS.md) | Django app: index daily OHLC history | [AGENTS.md](indexpricehistory/AGENTS.md) |
 | [`corporateannouncements/`](corporateannouncements/AGENTS.md) | Django app: NSE corporate announcements feed | [AGENTS.md](corporateannouncements/AGENTS.md) |
+| [`corporateactions/`](corporateactions/AGENTS.md) | Django app: NSE corporate actions (dividend/split/bonus/...) | [AGENTS.md](corporateactions/AGENTS.md) |
 | [`mfnavhistory/`](mfnavhistory/AGENTS.md) | Django app: AMFI mutual fund NAV history | [AGENTS.md](mfnavhistory/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
@@ -238,6 +243,56 @@ Guarantees:
   (`Asia/Kolkata`) datetimes.
 - Progress (INFO) and failures go to console and `logs/pipeline.log`; failures raise
   `CommandError` (exit 1).
+
+### Corporate actions ingest
+
+```
+python manage.py ingest_corporate_actions [--latest | --from YYYY-MM-DD | --days N]
+                                          [--to YYYY-MM-DD] [--lookback N] [--ahead N]
+                                          [--symbol SYM] [--segment SEGMENT]
+                                          [--chunk-days N] [--delay SECONDS]
+                                          [--timeout SECONDS] [--retries N]
+python manage.py check_corporate_action_prices [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+                                               [--symbol SYM] [--all]
+```
+
+| Option | Meaning |
+|---|---|
+| `--latest` | Ex-dates from `--lookback` days ago to `--ahead` days from now. Default mode. |
+| `--from YYYY-MM-DD [--to YYYY-MM-DD]` | Inclusive **ex-date** range, chunked and processed oldest-first. `--to` defaults to today. |
+| `--days N` | Last `N` calendar days (ending today). |
+| `--lookback N` / `--ahead N` | Window for `--latest`. Defaults 7 / 30 (upcoming actions are announced in advance). |
+| `--symbol SYM` / `--segment SEGMENT` | Filters passed to NSE. Segment default `equities`. |
+| `--chunk-days N` | Window size for long ranges. Default 90. |
+| `--delay` / `--retries` / `--timeout` | Throttle between chunks (1.0s), attempts per chunk (3), per-request timeout (60s; `jugaad-data`'s session has none, so a stalled NSE response would otherwise hang forever). |
+
+Live-API command like the announcements one (no `--data-dir`). Each NSE record
+becomes a `corporate_actions` row plus decoded `corporate_action_legs`
+(dividend / split / bonus / rights / ...); see
+[`corporateactions/AGENTS.md`](corporateactions/AGENTS.md).
+
+Guarantees:
+
+- Idempotent: keyed on `(instrument, ex_date, subject)`; re-running updates
+  amended dates, re-parses rows from an older `PARSER_VERSION`, never touches
+  `verified` status.
+- Fixed regex parsing only. A subject not decoded completely, or a split/bonus
+  whose factor disagrees with the real price move (±25%), is stored with
+  `status=needs_review` and a `review_reason`; nothing is guessed.
+- Price checks run for the actions touched by the run plus recent ones still
+  lacking price data; `check_corporate_action_prices` re-runs them (e.g. after a
+  price backfill).
+- A failed window is retried, the run continues with the other windows and
+  raises `CommandError` (exit 1) at the end; a re-run fills the gap.
+
+Examples:
+
+```bash
+python manage.py ingest_corporate_actions                       # latest (+30 days ahead)
+python manage.py ingest_corporate_actions --from 2025-01-01     # backfill
+python manage.py ingest_corporate_actions --symbol RELIANCE --from 2025-01-01
+python manage.py check_corporate_action_prices --all
+```
 
 ### Mutual fund NAV ingest
 
