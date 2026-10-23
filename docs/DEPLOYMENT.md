@@ -67,7 +67,7 @@ Observed versions (prod):
 |---|---|
 | Python | 3.14.4 |
 | Django | 6.1.1 |
-| jugaad-data | 0.35.9 |
+| jugaad-data | 0.37.0 |
 | python-dotenv | 1.2.3 |
 
 Dependencies are declared in `requirements.txt` and installed **into the venv**.
@@ -126,6 +126,7 @@ CRON_TZ=Asia/Kolkata
 | Index prices | `ingest_index_bhavcopy --latest --lookback 5` | `index_price_history` |
 | Corporate announcements | `ingest_corporate_announcements --latest --lookback 1` (every minute) | `corporate_announcements` |
 | Mutual fund NAV | `ingest_mf_nav --latest --lookback 5` (daily 06:30 IST) | `mutual_fund_nav_history` |
+| Corporate actions | `ingest_corporate_actions --latest` — **not scheduled yet** (see [Corporate actions](#corporate-actions)) | `corporate_actions`, `corporate_action_legs` |
 
 Notes:
 
@@ -173,6 +174,59 @@ env/bin/python manage.py ingest_corporate_announcements --from 2026-01-01 --to 2
 env/bin/python manage.py ingest_corporate_announcements --days 30
 env/bin/python manage.py ingest_corporate_announcements --symbol RELIANCE --days 30
 ```
+
+### Corporate actions
+
+NSE's corporate-actions feed is a **live API filtered by ex-date** (not a dated
+archive), so there is no downloaded file or provenance row. Each record is
+parsed with fixed regex logic into `corporate_actions` + `corporate_action_legs`
+and sanity-checked against real prices; anything not fully decoded, or a
+split/bonus whose factor disagrees with the real ex-date price move, is stored
+with `status='needs_review'`. Details: [`corporateactions/AGENTS.md`](../corporateactions/AGENTS.md).
+
+Deployed 2026-10-23 (requires `jugaad-data>=0.37.0`; `NSELive.corporate_actions`
+does not exist in 0.35.x). Backfilled from 2025-01-01 (the start of our price
+history) through 30 days ahead, in ~51s:
+
+```bash
+# one-off backfill, detached (done 2026-10-23); idempotent, safe to re-run
+ssh finapi 'cd /home/swapnil/apps/fin-api-data-pipeline && \
+  nohup env/bin/python manage.py ingest_corporate_actions \
+  --from 2025-01-01 --to "$(date -d "+30 days" +%F)" \
+  > logs/backfill_corporate_actions.log 2>&1 < /dev/null &'
+```
+
+Result on prod: 3,804 actions; 3,803 `auto`, 1 `needs_review` (QUINT, a
+`Rights - 7 Ccps And 7 Warrants:40` issue the parser cannot decode). Price check:
+165 passed, 4 inconclusive (bonus factor too close to 1), 6 `no_data` (no close on
+both sides, e.g. a just-listed stock or an ex-date not yet traded; re-checked on
+later runs), 0 failed.
+
+**Not on cron yet.** Suggested entry (daily, after the 04:00–08:00 bhavcopy window
+so ex-date price checks see fresh closes):
+
+```
+30 8 * * * flock -n /tmp/ingest_corporate_actions.lock bash -c 'cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_actions --latest >> logs/cron.log 2>&1'
+```
+
+Review queue and re-checks:
+
+```bash
+sqlite3 /mnt/blockstorage/db/db.sqlite3 \
+  "SELECT symbol, ex_date, subject, review_reason FROM corporate_actions WHERE status='needs_review';"
+env/bin/python manage.py check_corporate_action_prices      # re-check rows lacking price data
+```
+
+Gotchas learned while building this:
+
+- A face-value split gives the shares a **new ISIN**: NSE's record carries the old
+  one while post-ex-date prices sit under the new one. Prices are therefore looked
+  up through the NSE symbol (`nse_symbols_instrument_map`), not the action's
+  instrument.
+- `jugaad-data`'s requests session has **no timeout**; one stalled NSE response hung
+  a local run for many minutes. The command sets its own per-request timeout
+  (`--timeout`, default 60s). The older ingest commands do not, so a stalled NSE
+  response can still hold their `flock`.
 
 ### Mutual fund NAV
 
