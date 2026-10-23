@@ -170,3 +170,49 @@ class CorporateActionLeg(models.Model):
 
     def __str__(self):
         return f"{self.action_id}#{self.ordinal} {self.kind}"
+
+
+class PriceAdjustmentSegment(models.Model):
+    """Materialized price-adjustment range for one instrument.
+
+    Raw prices in ``nse_cm_price_history`` stay as traded. A price dated in
+    ``[valid_from, valid_to)`` is multiplied by ``factor`` to put it on the
+    share basis of the latest price (split / bonus / consolidation only for
+    ``mode='split_bonus'``). Prices after the instrument's last qualifying
+    event have no row, i.e. factor 1, so nothing needs updating day to day.
+    The first range of an instrument starts at ``START_OF_TIME`` so the join
+    needs no NULL handling.
+
+    Rebuilt by ``rebuild_price_adjustments`` (see ``adjustments.py``); read
+    with::
+
+        SELECT p.trade_date, p.close * COALESCE(s.factor, 1)
+        FROM nse_cm_price_history p
+        LEFT JOIN price_adjustment_segments s
+          ON s.instrument_id = p.instrument_id AND s.mode = 'split_bonus'
+         AND p.trade_date >= s.valid_from AND p.trade_date < s.valid_to
+    """
+
+    MODE_SPLIT_BONUS = "split_bonus"
+
+    instrument = models.ForeignKey(
+        Instrument, on_delete=models.CASCADE, related_name="adjustment_segments"
+    )
+    mode = models.CharField(max_length=16, default=MODE_SPLIT_BONUS)
+    valid_from = models.DateField()
+    valid_to = models.DateField()
+    factor = models.DecimalField(max_digits=18, decimal_places=8)
+    built_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "price_adjustment_segments"
+        ordering = ["instrument_id", "mode", "valid_from"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["instrument", "mode", "valid_from"],
+                name="uniq_adjustment_segment_start",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.instrument_id} {self.valid_from}..{self.valid_to} x{self.factor}"

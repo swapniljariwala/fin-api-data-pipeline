@@ -2,10 +2,16 @@ from datetime import date
 from decimal import Decimal
 from unittest import mock
 
+from io import StringIO
+
 from django.core.management import CommandError, call_command
+from django.db import connection
 from django.test import SimpleTestCase, TestCase
 
-from corporateactions.models import CorporateAction
+from corporateactions import adjustments
+from corporateactions.models import (
+    CorporateAction, CorporateActionLeg, PriceAdjustmentSegment,
+)
 from corporateactions.parsing import normalize_subject, parse_subject
 from dailypricehistory.models import NSECmPriceHistory
 from securityinfo.models import (
@@ -372,3 +378,153 @@ class PriceCheckAndIngestTests(TestCase):
         ):
             call_command("ingest_corporate_actions", days=3, delay=0, verbosity=0)
         self.assertEqual(CorporateAction.objects.count(), 0)
+
+
+class AdjustmentSegmentTests(TestCase):
+    """``rebuild_price_adjustments``: ranges, timing rules and lineage handling."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.eq = Series.objects.create(code="EQ", description="Equity")
+
+    def _instrument(self, isin, symbol="ACME"):
+        instrument = Instrument.objects.create(isin=isin, name=symbol)
+        nse_symbol, _ = NSESymbols.objects.get_or_create(symbol=symbol)
+        NSESymbolInstrumentMap.objects.create(symbol=nse_symbol, instrument=instrument)
+        return instrument
+
+    def _price(self, instrument, day, close=100):
+        NSECmPriceHistory.objects.create(
+            instrument=instrument, series=self.eq,
+            trade_date=date.fromisoformat(day), close=Decimal(str(close)),
+        )
+
+    def _action(self, instrument, ex, factor, symbol="ACME", status="auto", ordinal=0):
+        action, _ = CorporateAction.objects.get_or_create(
+            instrument=instrument, ex_date=date.fromisoformat(ex),
+            subject=f"event {ex}", defaults={"symbol": symbol, "status": status},
+        )
+        CorporateActionLeg.objects.create(
+            action=action, ordinal=ordinal, kind="BONUS", price_factor=Decimal(factor)
+        )
+        return action
+
+    def _segments(self, instrument):
+        return list(
+            PriceAdjustmentSegment.objects.filter(instrument=instrument)
+            .order_by("valid_from")
+            .values_list("valid_from", "valid_to", "factor")
+        )
+
+    def test_single_event_gives_one_range_from_the_start_of_time(self):
+        inst = self._instrument("INE000A01010")
+        self._price(inst, "2025-03-07")
+        self._price(inst, "2025-03-10")
+        self._action(inst, "2025-03-10", "0.5")
+        adjustments.rebuild()
+        self.assertEqual(
+            self._segments(inst),
+            [(adjustments.START_OF_TIME, date(2025, 3, 10), Decimal("0.5"))],
+        )
+
+    def test_event_waits_until_a_price_on_or_after_the_ex_date_exists(self):
+        inst = self._instrument("INE000A01010")
+        self._price(inst, "2025-03-07")
+        self._action(inst, "2025-03-10", "0.5")
+        summary = adjustments.rebuild()
+        self.assertEqual(self._segments(inst), [])
+        self.assertEqual((summary["events_applied"], summary["events_waiting"]), (0, 1))
+
+        self._price(inst, "2025-03-10")
+        adjustments.rebuild()
+        self.assertEqual(len(self._segments(inst)), 1)
+
+    def test_events_on_the_same_date_multiply_and_dates_accumulate(self):
+        inst = self._instrument("INE000A01010")
+        for day in ("2020-01-01", "2020-03-10", "2025-08-26", "2025-09-01"):
+            self._price(inst, day)
+        self._action(inst, "2020-03-10", "0.5", ordinal=0)
+        self._action(inst, "2020-03-10", "0.4", ordinal=1)  # same ex-date: 0.5 * 0.4
+        self._action(inst, "2025-08-26", "0.5")
+        adjustments.rebuild()
+        self.assertEqual(
+            self._segments(inst),
+            [
+                (adjustments.START_OF_TIME, date(2020, 3, 10), Decimal("0.1")),
+                (date(2020, 3, 10), date(2025, 8, 26), Decimal("0.5")),
+            ],
+        )
+
+    def test_needs_review_events_are_never_applied_and_are_removed_again(self):
+        inst = self._instrument("INE000A01010")
+        self._price(inst, "2025-03-07")
+        self._price(inst, "2025-03-10")
+        action = self._action(inst, "2025-03-10", "0.5", status="needs_review")
+        adjustments.rebuild()
+        self.assertEqual(self._segments(inst), [])
+
+        CorporateAction.objects.filter(pk=action.pk).update(status="verified")
+        adjustments.rebuild()
+        self.assertEqual(len(self._segments(inst)), 1)
+
+        CorporateAction.objects.filter(pk=action.pk).update(status="needs_review")
+        adjustments.rebuild()
+        self.assertEqual(self._segments(inst), [])
+
+    def test_isin_change_covers_old_and_new_instrument(self):
+        old = self._instrument("INE000A01010")
+        new = self._instrument("INE000A01028")
+        self._price(old, "2025-03-07", close=100)
+        self._price(new, "2025-03-10", close=20)
+        self._action(old, "2025-03-10", "0.2")
+        adjustments.rebuild()
+        self.assertEqual(len(self._segments(old)), 1)
+        self.assertEqual(len(self._segments(new)), 1)
+
+        with connection.cursor() as cursor:  # the documented read query
+            cursor.execute(
+                """
+                SELECT p.trade_date, p.close * COALESCE(s.factor, 1)
+                FROM nse_cm_price_history p
+                LEFT JOIN price_adjustment_segments s
+                  ON s.instrument_id = p.instrument_id AND s.mode = 'split_bonus'
+                 AND p.trade_date >= s.valid_from AND p.trade_date < s.valid_to
+                ORDER BY p.trade_date
+                """
+            )
+            rows = [(str(d), round(float(v), 4)) for d, v in cursor.fetchall()]
+        self.assertEqual(rows, [("2025-03-07", 20.0), ("2025-03-10", 20.0)])
+
+    def test_a_symbol_reused_by_another_company_does_not_inherit_the_old_splits(self):
+        first = self._instrument("INE000A01010")
+        second = self._instrument("INE111B01010")  # same symbol, listed years later
+        for day in ("2016-10-06", "2018-06-01"):
+            self._price(first, day)
+        for day in ("2022-01-03", "2023-06-01", "2023-06-05"):
+            self._price(second, day)
+        self._action(second, "2023-06-01", "0.5")
+        adjustments.rebuild()
+        self.assertEqual(self._segments(first), [])
+        self.assertEqual(len(self._segments(second)), 1)
+
+    def test_rebuild_is_idempotent_and_dry_run_writes_nothing(self):
+        inst = self._instrument("INE000A01010")
+        self._price(inst, "2025-03-07")
+        self._price(inst, "2025-03-10")
+        self._action(inst, "2025-03-10", "0.5")
+
+        dry = adjustments.rebuild(dry_run=True)
+        self.assertEqual((dry["instruments_changed"], PriceAdjustmentSegment.objects.count()), (1, 0))
+
+        first = adjustments.rebuild()
+        self.assertEqual((first["instruments_changed"], first["rows_written"]), (1, 1))
+        second = adjustments.rebuild()
+        self.assertEqual((second["instruments_changed"], second["rows_written"]), (0, 0))
+        full = adjustments.rebuild(full=True)
+        self.assertEqual(full["instruments_changed"], 1)
+        self.assertEqual(PriceAdjustmentSegment.objects.count(), 1)
+
+    def test_command_reports_a_summary(self):
+        out = StringIO()
+        call_command("rebuild_price_adjustments", "--dry-run", stdout=out)
+        self.assertIn("dry run", out.getvalue())

@@ -254,6 +254,7 @@ python manage.py ingest_corporate_actions [--latest | --from YYYY-MM-DD | --days
                                           [--timeout SECONDS] [--retries N]
 python manage.py check_corporate_action_prices [--from YYYY-MM-DD] [--to YYYY-MM-DD]
                                                [--symbol SYM] [--all]
+python manage.py rebuild_price_adjustments [--dry-run] [--full]
 ```
 
 | Option | Meaning |
@@ -285,6 +286,14 @@ Guarantees:
 - A failed window is retried, the run continues with the other windows and
   raises `CommandError` (exit 1) at the end; a re-run fills the gap.
 
+`rebuild_price_adjustments` rebuilds `price_adjustment_segments` (split/bonus/
+consolidation ranges an API joins to adjust `nse_cm_price_history`; raw prices are
+never modified). An event is applied once the symbol has a price on or after its
+ex-date, never earlier; only `auto`/`verified` actions count. It writes only the
+instruments whose ranges changed, so it is safe to run any time (`--dry-run` to
+preview, `--full` to rewrite everything). See
+[`corporateactions/AGENTS.md`](corporateactions/AGENTS.md#price-adjustment).
+
 Examples:
 
 ```bash
@@ -292,6 +301,7 @@ python manage.py ingest_corporate_actions                       # latest (+30 da
 python manage.py ingest_corporate_actions --from 2025-01-01     # backfill
 python manage.py ingest_corporate_actions --symbol RELIANCE --from 2025-01-01
 python manage.py check_corporate_action_prices --all
+python manage.py rebuild_price_adjustments --dry-run
 ```
 
 ### Mutual fund NAV ingest
