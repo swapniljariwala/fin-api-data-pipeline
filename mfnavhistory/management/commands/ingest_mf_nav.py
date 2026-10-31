@@ -21,9 +21,12 @@ Mode selection (exactly one):
 * ``--days N``: last N calendar days ending today.
 
 Idempotency comes from the row-level unique key ``(scheme, nav_date)`` via
-``bulk_create(ignore_conflicts=True)`` inside one transaction per chunk, so
-re-running an overlapping window is a no-op for rows already present. Scheme
-dimension attributes (name, plan, option, ISINs, scheme type, AMC, category) are
+``bulk_create(ignore_conflicts=True)``, committed in short per-batch
+transactions (``INSERT_BATCH_SIZE`` rows) so the shared SQLite write lock is
+never held for long; inserted counts come from SQLite's ``total_changes``
+rather than ``count()`` (a full scan of a very large table). Re-running an
+overlapping window is a no-op for rows already present. Scheme dimension
+attributes (name, plan, option, ISINs, scheme type, AMC, category) are
 updated **latest-wins** as newer rows are seen.
 
 Progress and errors go to console and ``logs/pipeline.log`` via the
@@ -36,7 +39,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import OperationalError, transaction
+from django.db import OperationalError, connection, transaction
 
 from mfnavhistory.models import (
     MutualFundAmc,
@@ -48,6 +51,10 @@ from mfnavhistory.models import (
 logger = logging.getLogger(__name__)
 
 UNSPECIFIED = "Unspecified"
+
+# NAV rows inserted per write transaction; keeps each lock hold to well under
+# the other jobs' 5 s busy_timeout.
+INSERT_BATCH_SIZE = 2000
 
 
 def _clean(value):
@@ -327,9 +334,19 @@ class Command(BaseCommand):
         return None
 
     def _ingest_records(self, records):
+        """Parse, resolve dimensions, then insert NAV rows in short transactions.
+
+        The SQLite write lock is shared with every other ingest job (the
+        corporate-announcements job runs every minute with a 5 s busy_timeout),
+        so it must never be held for long. Never call ``count()`` on
+        ``mutual_fund_nav_history`` here: it is a full scan of a very large
+        table and previously held the write lock for ~25 minutes.
+        """
         rows = []
         skipped = 0
         bad_nav = 0
+        # Phase 1: parse + resolve scheme/AMC/category. Mostly reads; the write
+        # lock is only taken if a dimension row is new or changed.
         with transaction.atomic():
             for record in records:
                 row, reason = self._parse_record(record)
@@ -339,17 +356,35 @@ class Command(BaseCommand):
                         bad_nav += 1
                     continue
                 rows.append(row)
-            if bad_nav:
-                logger.warning(
-                    "%d row(s) skipped for unparseable nav in this chunk", bad_nav
-                )
-
-            before = MutualFundNavHistory.objects.count()
-            MutualFundNavHistory.objects.bulk_create(
-                rows, ignore_conflicts=True, batch_size=1000
+        if bad_nav:
+            logger.warning(
+                "%d row(s) skipped for unparseable nav in this chunk", bad_nav
             )
-            inserted = MutualFundNavHistory.objects.count() - before
+
+        # Phase 2: insert NAV rows, one short transaction per batch so other
+        # writers can get in between batches. INSERT OR IGNORE on the unique
+        # (scheme, nav_date) key keeps a retry of a committed batch a no-op.
+        inserted = 0
+        for start in range(0, len(rows), INSERT_BATCH_SIZE):
+            batch = rows[start : start + INSERT_BATCH_SIZE]
+            with transaction.atomic():
+                inserted += self._insert_counting(batch)
         return inserted, len(rows) - inserted, skipped
+
+    @staticmethod
+    def _insert_counting(batch):
+        """Bulk insert ignoring conflicts; return how many rows were actually inserted.
+
+        Uses SQLite's per-connection ``total_changes`` counter, which counts
+        only rows really inserted by ``INSERT OR IGNORE``.
+        """
+        connection.ensure_connection()
+        raw = connection.connection
+        before = raw.total_changes
+        MutualFundNavHistory.objects.bulk_create(
+            batch, ignore_conflicts=True, batch_size=500
+        )
+        return raw.total_changes - before
 
     def _parse_record(self, record):
         """Return ``(row, reason)``; ``row`` is None on skip and ``reason`` says why."""

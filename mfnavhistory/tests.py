@@ -194,3 +194,48 @@ class IngestMfNavLockRetryTests(TestCase):
             _run(from_date="2026-09-29", to_date="2026-09-30")
 
         self.assertEqual(ingest.call_count, 3)
+
+
+class IngestMfNavLockFootprintTests(TestCase):
+    @mock.patch(PATCH_TARGET)
+    def test_never_counts_nav_history_table(self, fetch):
+        fetch.return_value = [_record(), _record(date="30-Sep-2026")]
+        with mock.patch.object(
+            type(MutualFundNavHistory.objects),
+            "count",
+            side_effect=AssertionError("count() must not be called during ingest"),
+        ):
+            _run(from_date="2026-09-29", to_date="2026-09-30")
+        self.assertEqual(MutualFundNavHistory.objects.count(), 2)
+
+    def test_mixed_batch_counts_inserted_and_duplicates(self):
+        cmd = Command()
+        cmd._amc_cache, cmd._category_cache, cmd._scheme_cache = {}, {}, {}
+        cmd._ingest_records([_record(date="29-Sep-2026"), _record(date="30-Sep-2026")])
+
+        cmd._scheme_cache.clear()
+        result = cmd._ingest_records(
+            [
+                _record(date="29-Sep-2026"),
+                _record(date="30-Sep-2026"),
+                _record(date="01-Oct-2026"),
+                _record(scheme_code="139620", date="01-Oct-2026"),
+                _record(nav="garbage"),
+            ]
+        )
+        self.assertEqual(result, (2, 2, 1))
+        self.assertEqual(MutualFundNavHistory.objects.count(), 4)
+
+    @mock.patch(
+        "mfnavhistory.management.commands.ingest_mf_nav.INSERT_BATCH_SIZE", 2
+    )
+    def test_inserts_in_multiple_small_batches(self):
+        cmd = Command()
+        cmd._amc_cache, cmd._category_cache, cmd._scheme_cache = {}, {}, {}
+        records = [_record(scheme_code=str(139600 + i)) for i in range(5)]
+        with mock.patch.object(
+            Command, "_insert_counting", wraps=Command._insert_counting
+        ) as insert:
+            result = cmd._ingest_records(records)
+        self.assertEqual(insert.call_count, 3)
+        self.assertEqual(result, (5, 0, 0))
