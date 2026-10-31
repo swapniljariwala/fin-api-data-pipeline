@@ -239,3 +239,17 @@ class IngestMfNavLockFootprintTests(TestCase):
             result = cmd._ingest_records(records)
         self.assertEqual(insert.call_count, 3)
         self.assertEqual(result, (5, 0, 0))
+
+    def test_existing_rows_are_not_sent_to_insert(self):
+        cmd = Command()
+        cmd._amc_cache, cmd._category_cache, cmd._scheme_cache = {}, {}, {}
+        cmd._ingest_records([_record(date="29-Sep-2026")])
+        with mock.patch.object(
+            Command, "_insert_counting", wraps=Command._insert_counting
+        ) as insert:
+            result = cmd._ingest_records(
+                [_record(date="29-Sep-2026"), _record(date="30-Sep-2026")]
+            )
+        self.assertEqual(result, (1, 1, 0))
+        (batch,), _ = insert.call_args
+        self.assertEqual([row.nav_date for row in batch], [date(2026, 9, 30)])

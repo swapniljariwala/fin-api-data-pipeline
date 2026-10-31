@@ -52,9 +52,10 @@ logger = logging.getLogger(__name__)
 
 UNSPECIFIED = "Unspecified"
 
-# NAV rows inserted per write transaction; keeps each lock hold to well under
+# NAV rows inserted per write transaction; ~2000 took ~10 s on the production
+# block-storage DB, so keep each lock hold well under
 # the other jobs' 5 s busy_timeout.
-INSERT_BATCH_SIZE = 2000
+INSERT_BATCH_SIZE = 250
 
 
 def _clean(value):
@@ -345,31 +346,50 @@ class Command(BaseCommand):
         rows = []
         skipped = 0
         bad_nav = 0
-        # Phase 1: parse + resolve scheme/AMC/category. Mostly reads; the write
-        # lock is only taken if a dimension row is new or changed.
-        with transaction.atomic():
-            for record in records:
-                row, reason = self._parse_record(record)
-                if reason is not None:
-                    skipped += 1
-                    if reason == "bad_nav":
-                        bad_nav += 1
-                    continue
-                rows.append(row)
+        # Phase 1: parse + resolve scheme/AMC/category in autocommit mode. Mostly
+        # cached reads; each dimension write (get_or_create / save) is its own
+        # tiny transaction, so a new scheme early on can't pin the write lock
+        # for the rest of the parse.
+        for record in records:
+            row, reason = self._parse_record(record)
+            if reason is not None:
+                skipped += 1
+                if reason == "bad_nav":
+                    bad_nav += 1
+                continue
+            rows.append(row)
         if bad_nav:
             logger.warning(
                 "%d row(s) skipped for unparseable nav in this chunk", bad_nav
             )
 
-        # Phase 2: insert NAV rows, one short transaction per batch so other
-        # writers can get in between batches. INSERT OR IGNORE on the unique
-        # (scheme, nav_date) key keeps a retry of a committed batch a no-op.
+        # Phase 2: drop rows already present, using an indexed range read
+        # (WAL readers never block writers). Each INSERT OR IGNORE of a
+        # duplicate still costs an index probe *under the write lock*, and on
+        # the production DB that is the dominant cost.
+        new_rows = self._without_existing(rows)
+
+        # Phase 3: insert the genuinely new rows, one short transaction per
+        # batch so other writers get in between batches. INSERT OR IGNORE on
+        # the unique (scheme, nav_date) key covers races and retries.
         inserted = 0
-        for start in range(0, len(rows), INSERT_BATCH_SIZE):
-            batch = rows[start : start + INSERT_BATCH_SIZE]
+        for start in range(0, len(new_rows), INSERT_BATCH_SIZE):
+            batch = new_rows[start : start + INSERT_BATCH_SIZE]
             with transaction.atomic():
                 inserted += self._insert_counting(batch)
         return inserted, len(rows) - inserted, skipped
+
+    @staticmethod
+    def _without_existing(rows):
+        if not rows:
+            return rows
+        dates = [row.nav_date for row in rows]
+        existing = set(
+            MutualFundNavHistory.objects.filter(
+                nav_date__gte=min(dates), nav_date__lte=max(dates)
+            ).values_list("scheme_id", "nav_date")
+        )
+        return [row for row in rows if (row.scheme_id, row.nav_date) not in existing]
 
     @staticmethod
     def _insert_counting(batch):
