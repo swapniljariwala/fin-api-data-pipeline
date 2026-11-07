@@ -1,3 +1,4 @@
 django==6.1.1
 jugaad-data==0.37.0
+jugaad-xbrl==0.3.0
 python-dotenv==1.2.3
