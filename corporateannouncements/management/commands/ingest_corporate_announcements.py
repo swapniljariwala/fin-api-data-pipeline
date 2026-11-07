@@ -181,22 +181,39 @@ class Command(BaseCommand):
 
     @staticmethod
     def _optimize():
-        """Refresh planner stats if SQLite thinks they are stale.
+        """Re-ANALYZE ``corporate_announcements`` only if its stats are stale.
 
-        ``PRAGMA optimize`` only re-analyzes tables whose size changed a lot,
-        so this is cheap on most runs. Skipped during Litestream's daily
-        snapshot window (starts 05:30 IST = 00:00 UTC, finishes ~05:41)
-        because ANALYZE reads the tables.
+        Deliberately not ``PRAGMA optimize``: that works on the whole DB and
+        would try to build stats for every large table lacking them (on prod
+        that held the write lock for 30+ min and blocked this cron). Here we
+        compare the row count recorded in ``sqlite_stat1`` with ``MAX(id)``
+        (a cheap rowid lookup) and analyze, sampled, only when the table has
+        grown by >25% or has no stats. Skipped during Litestream's daily
+        snapshot window (starts 05:30 IST = 00:00 UTC, finishes ~05:41).
         """
         now = timezone.now().astimezone(IST)
         if (5, 30) <= (now.hour, now.minute) <= (5, 45):
             return
+        table = CorporateAnnouncement._meta.db_table
         try:
             with connection.cursor() as cur:
+                cur.execute(
+                    "SELECT stat FROM sqlite_stat1 WHERE tbl = %s LIMIT 1", [table]
+                )
+                row = cur.fetchone()
+                cur.execute(f"SELECT MAX(id) FROM {table}")
+                max_id = cur.fetchone()[0] or 0
+                analyzed_rows = int(row[0].split()[0]) if row else 0
+                if row and max_id <= analyzed_rows * 1.25:
+                    return
+                logger.info(
+                    "Refreshing planner stats for %s (%d rows analyzed, ~%d now)",
+                    table, analyzed_rows, max_id,
+                )
                 cur.execute("PRAGMA analysis_limit=1000")
-                cur.execute("PRAGMA optimize")
+                cur.execute(f"ANALYZE {table}")
         except Exception as exc:  # stats are best-effort; never fail ingest
-            logger.warning("PRAGMA optimize failed: %s", exc)
+            logger.warning("planner stats refresh failed: %s", exc)
 
     def _parse_record(self, raw):
         seq_id_raw = _clean(raw.get("seq_id"))
