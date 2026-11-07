@@ -54,6 +54,18 @@ class OptimizeStatsTests(TestCase):
                             ["corporate_announcements"])
                 self.assertEqual(cur.fetchone()[0], before)
 
+    def test_sparse_ids_do_not_trigger_reanalyze(self):
+        """ignore_conflicts inserts burn autoincrement ids; MAX(id) != row count."""
+        self._add(20)
+        Command._optimize()
+        CorporateAnnouncement.objects.filter(seq_id=0).update(id=1_000_000)
+        with mock.patch(
+            "corporateannouncements.management.commands."
+            "ingest_corporate_announcements.logger"
+        ) as log:
+            Command._optimize()
+        log.info.assert_not_called()
+
     def test_reanalyzes_after_growth(self):
         self._add(20)
         Command._optimize()

@@ -186,9 +186,10 @@ class Command(BaseCommand):
         Deliberately not ``PRAGMA optimize``: that works on the whole DB and
         would try to build stats for every large table lacking them (on prod
         that held the write lock for 30+ min and blocked this cron). Here we
-        compare the row count recorded in ``sqlite_stat1`` with ``MAX(id)``
-        (a cheap rowid lookup) and analyze, sampled, only when the table has
-        grown by >25% or has no stats. Skipped during Litestream's daily
+        compare the row count recorded in ``sqlite_stat1`` with ``COUNT(*)``
+        (a scan of the smallest index; ``MAX(id)`` is useless here because
+        ``ignore_conflicts`` inserts burn autoincrement ids) and analyze,
+        sampled, only when the table has grown by >25% or has no stats. Skipped during Litestream's daily
         snapshot window (starts 05:30 IST = 00:00 UTC, finishes ~05:41).
         """
         now = timezone.now().astimezone(IST)
@@ -201,14 +202,14 @@ class Command(BaseCommand):
                     "SELECT stat FROM sqlite_stat1 WHERE tbl = %s LIMIT 1", [table]
                 )
                 row = cur.fetchone()
-                cur.execute(f"SELECT MAX(id) FROM {table}")
-                max_id = cur.fetchone()[0] or 0
+                cur.execute(f"SELECT COUNT(*) FROM {table}")
+                rows_now = cur.fetchone()[0] or 0
                 analyzed_rows = int(row[0].split()[0]) if row else 0
-                if row and max_id <= analyzed_rows * 1.25:
+                if row and rows_now <= analyzed_rows * 1.25:
                     return
                 logger.info(
                     "Refreshing planner stats for %s (%d rows analyzed, ~%d now)",
-                    table, analyzed_rows, max_id,
+                    table, analyzed_rows, rows_now,
                 )
                 cur.execute("PRAGMA analysis_limit=1000")
                 cur.execute(f"ANALYZE {table}")
