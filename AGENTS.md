@@ -34,6 +34,10 @@ Current state:
   ex-date) into the `corporateactions` app: fixed-logic parsing of dividends,
   splits, bonus, rights etc., plus a price sanity check that sends anything
   doubtful to `needs_review`.
+- Working `ingest_integrated_filings` management command (live NSE feed) into
+  the `integratedfilings` app: records the list of NSE Integrated Filing
+  releases (one row per release, revisions included). The XBRL itself is not
+  yet downloaded or parsed.
 - Project-level logging: console + `logs/pipeline.log` (rotated daily, 7 days kept).
 - Object-store upload is a stub (`dailypricehistory/object_store.py`); to be
   implemented later.
@@ -72,6 +76,7 @@ Two production gotchas are called out there:
 | [`indexpricehistory/`](indexpricehistory/AGENTS.md) | Django app: index daily OHLC history | [AGENTS.md](indexpricehistory/AGENTS.md) |
 | [`corporateannouncements/`](corporateannouncements/AGENTS.md) | Django app: NSE corporate announcements feed | [AGENTS.md](corporateannouncements/AGENTS.md) |
 | [`corporateactions/`](corporateactions/AGENTS.md) | Django app: NSE corporate actions (dividend/split/bonus/...) | [AGENTS.md](corporateactions/AGENTS.md) |
+| [`integratedfilings/`](integratedfilings/AGENTS.md) | Django app: NSE Integrated Filing releases (list; XBRL extraction later) | [AGENTS.md](integratedfilings/AGENTS.md) |
 | [`mfnavhistory/`](mfnavhistory/AGENTS.md) | Django app: AMFI mutual fund NAV history | [AGENTS.md](mfnavhistory/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
@@ -328,6 +333,31 @@ python manage.py ingest_corporate_actions --from 2025-01-01     # backfill
 python manage.py ingest_corporate_actions --symbol RELIANCE --from 2025-01-01
 python manage.py check_corporate_action_prices --all
 python manage.py rebuild_price_adjustments --dry-run
+```
+
+### Integrated filings ingest
+
+```
+python manage.py ingest_integrated_filings [--latest | --from YYYY-MM-DD | --days N]
+                                           [--to YYYY-MM-DD] [--lookback N]
+                                           [--symbol SYM] [--segment equities|sme]
+                                           [--period-ended DD-Mon-YYYY|all]
+                                           [--type financials|governance]
+                                           [--page-size N] [--delay SECONDS] [--retries N]
+```
+
+Live NSE API (`NSELive.corporate_integrated_filing`), paginated; no `--data-dir`.
+Rows land in `integrated_filings` keyed by NSE's `seq_id`; a revision is its own
+row (`type_sub = Revision`). Only the list is recorded, not the XBRL. Idempotent
+(`ignore_conflicts`), a failed page is retried then raises `CommandError`. The feed
+has no ISIN, so the instrument is resolved through `NSESymbolInstrumentMap` by
+symbol. Details and gotchas (null `broadcast_Date` on revisions) in
+[`integratedfilings/AGENTS.md`](integratedfilings/AGENTS.md).
+
+```bash
+python manage.py ingest_integrated_filings                       # last 3 days
+python manage.py ingest_integrated_filings --period-ended 30-Sep-2026 --from 2026-10-01
+python manage.py ingest_integrated_filings --symbol TCS --days 60
 ```
 
 ### Mutual fund NAV ingest

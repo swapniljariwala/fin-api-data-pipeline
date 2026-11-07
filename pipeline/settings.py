@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "indexpricehistory",
     "corporateannouncements",
     "corporateactions",
+    "integratedfilings",
     "mfnavhistory",
 ]
 
@@ -242,6 +243,11 @@ LOGGING = {
             "propagate": False,
         },
         "corporateactions": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "integratedfilings": {
             "handlers": ["console", "file"],
             "level": "INFO",
             "propagate": False,
