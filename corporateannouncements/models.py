@@ -51,6 +51,10 @@ class CorporateAnnouncement(models.Model):
                 fields=["instrument", "announced_at"],
                 name="idx_annc_instr_date",
             ),
+            models.Index(
+                fields=["category", "-announced_at"],
+                name="idx_annc_cat_date",
+            ),
         ]
 
     def __str__(self):

@@ -36,7 +36,7 @@ import zoneinfo
 from datetime import date, datetime, timedelta
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 
 from corporateannouncements.models import AnnouncementCategory, CorporateAnnouncement
@@ -176,6 +176,27 @@ class Command(BaseCommand):
             "%d/%d record(s) ingested (%d duplicates skipped, %d unparseable)",
             inserted, len(records), len(rows) - inserted, skipped,
         )
+        if inserted:
+            self._optimize()
+
+    @staticmethod
+    def _optimize():
+        """Refresh planner stats if SQLite thinks they are stale.
+
+        ``PRAGMA optimize`` only re-analyzes tables whose size changed a lot,
+        so this is cheap on most runs. Skipped during Litestream's daily
+        snapshot window (starts 05:30 IST = 00:00 UTC, finishes ~05:41)
+        because ANALYZE reads the tables.
+        """
+        now = timezone.now().astimezone(IST)
+        if (5, 30) <= (now.hour, now.minute) <= (5, 45):
+            return
+        try:
+            with connection.cursor() as cur:
+                cur.execute("PRAGMA analysis_limit=1000")
+                cur.execute("PRAGMA optimize")
+        except Exception as exc:  # stats are best-effort; never fail ingest
+            logger.warning("PRAGMA optimize failed: %s", exc)
 
     def _parse_record(self, raw):
         seq_id_raw = _clean(raw.get("seq_id"))
