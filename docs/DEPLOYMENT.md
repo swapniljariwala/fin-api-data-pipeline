@@ -101,43 +101,55 @@ env/bin/pip install -r requirements.txt
 ## Scheduled jobs (cron)
 
 Schedule lives in **user `swapnil`'s crontab** (`crontab -l`), not systemd. It
-uses `CRON_TZ=Asia/Kolkata`. The three bhavcopy jobs run every 15 minutes during
-the 04:00–08:00 IST window (after NSE publishes the previous session's files),
-with a 5-day lookback so missed runs self-heal. The corporate-announcements feed
-is **live** and can update at any second, so it is polled **every minute**. The
-mutual-fund NAV report for a session is published by AMFI the same evening, so
-it is fetched **once daily** at 06:30 IST:
+uses `CRON_TZ=Asia/Kolkata`. The four bhavcopy jobs run every 15 minutes during
+the 04:00–08:59 IST window (after NSE publishes the previous session's files),
+with a 5-day lookback so missed runs self-heal. They are **spaced 3 minutes
+apart in priority order** (stock, index, F&O, delivery) so they do not all start
+on the same minute and fight over the SQLite write lock on the slow disc;
+delivery goes last because it needs that date's CM bhavcopy already ingested.
+The corporate-announcements feed is **live** and can update at any second, so
+it is polled **every minute**. The mutual-fund NAV report for a session is
+published by AMFI the same evening, so it is fetched **once daily** at 09:30
+IST, after the bhavcopy window. Every job is wrapped in `flock` and appends to
+`logs/cron.log` (changed 2026-11-07; previously the bhavcopy jobs ran bare and
+all fired on the same minute):
 
 ```
 CRON_TZ=Asia/Kolkata
-*/15 4-8 * * * /home/swapnil/apps/fin-api-data-pipeline/env/bin/python /home/swapnil/apps/fin-api-data-pipeline/manage.py  ingest_bhavcopy --latest --lookback 5
-*/15 4-8 * * * /home/swapnil/apps/fin-api-data-pipeline/env/bin/python /home/swapnil/apps/fin-api-data-pipeline/manage.py  ingest_fno_bhavcopy --latest --lookback 5
-*/15 4-8 * * * /home/swapnil/apps/fin-api-data-pipeline/env/bin/python /home/swapnil/apps/fin-api-data-pipeline/manage.py  ingest_index_bhavcopy --latest --lookback 5
+0,15,30,45 4-8 * * * flock -n /tmp/ingest_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
+3,18,33,48 4-8 * * * flock -n /tmp/ingest_index_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_index_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
+6,21,36,51 4-8 * * * flock -n /tmp/ingest_fno_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_fno_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
+9,24,39,54 4-8 * * * flock -n /tmp/ingest_delivery_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_delivery_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
 # Corporate announcements: live feed, poll every minute (lookback 1 = today only)
-* * * * * flock -n /tmp/ingest_corporate_announcements.lock bash -c 'cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_announcements --latest --lookback 1 >> logs/cron.log 2>&1'
-# Mutual fund NAV: AMFI publishes the session's report the same evening
-30 6 * * * flock -n /tmp/ingest_mf_nav.lock bash -c 'cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_mf_nav --latest --lookback 5 >> logs/cron.log 2>&1'
+* * * * * flock -n /tmp/ingest_corporate_announcements.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_announcements --latest --lookback 1 >> logs/cron.log 2>&1"
+# Mutual fund NAV: AMFI publishes the session's report the same evening; run after the bhavcopy window
+30 9 * * * flock -n /tmp/ingest_mf_nav.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_mf_nav --latest --lookback 5 >> logs/cron.log 2>&1"
 ```
+
+The Litestream daily snapshot of the 5.4 GB DB starts at 05:30 IST (00:00 UTC)
+and runs to about 05:41; the service is throttled (`Nice=15`,
+`IOSchedulingClass=idle` in its systemd drop-in) so ingests and the API stay
+responsive. Run migrations and other heavy DB work outside 05:30–05:45.
 
 | Job | Command | Writes to |
 |---|---|---|
 | CM daily prices | `ingest_bhavcopy --latest --lookback 5` | `nse_cm_price_history` |
-| CM delivery data | `ingest_delivery_bhavcopy --latest --lookback 5` (**not scheduled yet**; run after `ingest_bhavcopy`, see [Delivery data](#delivery-data)) | `nse_cm_delivery` |
+| CM delivery data | `ingest_delivery_bhavcopy --latest --lookback 5` (:09/:24/:39/:54, after `ingest_bhavcopy`, see [Delivery data](#delivery-data)) | `nse_cm_delivery` |
 | F&O daily prices | `ingest_fno_bhavcopy --latest --lookback 5` | `fno_price_history` |
 | Index prices | `ingest_index_bhavcopy --latest --lookback 5` | `index_price_history` |
 | Corporate announcements | `ingest_corporate_announcements --latest --lookback 1` (every minute) | `corporate_announcements` |
-| Mutual fund NAV | `ingest_mf_nav --latest --lookback 5` (daily 06:30 IST) | `mutual_fund_nav_history` |
+| Mutual fund NAV | `ingest_mf_nav --latest --lookback 5` (daily 09:30 IST) | `mutual_fund_nav_history` |
 | Corporate actions | `ingest_corporate_actions --latest` — **not scheduled yet** (see [Corporate actions](#corporate-actions)) | `corporate_actions`, `corporate_action_legs` |
 
 Notes:
 
 - Commands are idempotent and restart-safe, so the repeats are cheap:
   already-ingested files/rows are skipped and each run is a no-op when up to date.
-- The bhavcopy commands log to `logs/pipeline.log`; cron output/errors are not
-  captured anywhere (no MTA is installed on the host), which is why failures are silent.
-- The corporate-announcements job is the **only** cron entry that captures output
-  (`>> logs/cron.log 2>&1`) and is wrapped in `flock` so a slow run cannot
-  overlap the next minute's run. `--lookback 1` is the command's minimum window
+- The commands log to `logs/pipeline.log`, and all cron entries now also append
+  stdout/stderr to `logs/cron.log` (no MTA is installed on the host, so
+  uncaptured cron failures used to be silent). Each is wrapped in `flock` so a
+  slow run cannot overlap the next one.
+- Corporate announcements: `--lookback 1` is the command's minimum window
   (it rejects `<= 0`) and fetches **today only**; because the API takes day
   ranges, an announcement that lands just after local midnight is not picked up
   by the next day's window, so re-run a short range manually if that matters
@@ -151,12 +163,8 @@ Notes:
 `ingest_delivery_bhavcopy` loads `DELIV_QTY`/`DELIV_PER` from the NSE full
 bhavcopy into `nse_cm_delivery` (1 year kept). It needs migration
 `dailypricehistory.0007` and the regular bhavcopy for the date already ingested.
-Suggested cron entry (same window as the price ingest, with `flock` and captured
-output so failures are not silent):
-
-```
-*/15 4-8 * * * flock -n /tmp/ingest_delivery_bhavcopy.lock bash -c 'cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_delivery_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1'
-```
+It is scheduled in the crontab above (same window as the price ingests, at
+:09/:24/:39/:54 so the CM bhavcopy from :00 is already in).
 
 Backfill (at most 365 days; older dates are skipped):
 `manage.py ingest_delivery_bhavcopy --from <date> --delay 2 --retries 3`.

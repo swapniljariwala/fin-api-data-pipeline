@@ -46,10 +46,13 @@ guide — server layout, virtualenv, DB, cron schedule, deploy/backfill
 procedures, local DB sync for testing, logs, and known issues — is in
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Read it before touching production.
 
-Cron schedule (prod): the three bhavcopy ingests every 15 min in the 04:00–08:00
-IST window, `ingest_corporate_announcements --latest --lookback 1` (a live
-feed) **every minute**, and `ingest_mf_nav --latest --lookback 5` **once daily**
-at 06:30 IST, all wrapped in `flock` with captured output.
+Cron schedule (prod): the four bhavcopy ingests (CM, index, F&O, delivery) every
+15 min in the 04:00–08:59 IST window, spaced 3 min apart in that priority order
+(:00/:03/:06/:09 of each quarter hour),
+`ingest_corporate_announcements --latest --lookback 1` (a live feed) **every
+minute**, and `ingest_mf_nav --latest --lookback 5` **once daily** at 09:30 IST,
+all wrapped in `flock` with captured output. Litestream's daily snapshot runs
+05:30–05:45 IST; avoid heavy DB work then.
 
 Two production gotchas are called out there:
 
