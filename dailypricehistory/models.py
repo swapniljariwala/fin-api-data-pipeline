@@ -7,9 +7,11 @@ class BhavcopyFile(models.Model):
 
     FORMAT_LEGACY = "legacy"
     FORMAT_UDIFF = "udiff"
+    FORMAT_FULL = "full"
     FORMAT_CHOICES = [
         (FORMAT_LEGACY, "legacy"),
         (FORMAT_UDIFF, "udiff"),
+        (FORMAT_FULL, "full"),
     ]
 
     file_name = models.CharField(max_length=255, unique=True)
@@ -78,4 +80,34 @@ class NSECmPriceHistory(models.Model):
     def __str__(self):
         return f"#{self.pk} {self.trade_date}"
 
+
+class NSECmDelivery(models.Model):
+    """Delivery data from the NSE full bhavcopy for one price row.
+
+    The primary key is the price row's id, so joining to
+    ``nse_cm_price_history`` is a primary-key lookup. Only the last year is
+    kept (see ``purge_old_delivery``); price rows are never touched by it.
+    ``trade_date`` is denormalised for the purge and date scans.
+    """
+
+    price = models.OneToOneField(
+        NSECmPriceHistory,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="delivery",
+    )
+    trade_date = models.DateField()
+    deliv_qty = models.BigIntegerField(null=True, blank=True)
+    deliv_per = models.DecimalField(
+        max_digits=7, decimal_places=2, null=True, blank=True
+    )
+
+    class Meta:
+        db_table = "nse_cm_delivery"
+        indexes = [
+            models.Index(fields=["trade_date"], name="idx_cm_delivery_date"),
+        ]
+
+    def __str__(self):
+        return f"#{self.pk} {self.trade_date}"
 

@@ -122,6 +122,7 @@ CRON_TZ=Asia/Kolkata
 | Job | Command | Writes to |
 |---|---|---|
 | CM daily prices | `ingest_bhavcopy --latest --lookback 5` | `nse_cm_price_history` |
+| CM delivery data | `ingest_delivery_bhavcopy --latest --lookback 5` (**not scheduled yet**; run after `ingest_bhavcopy`, see [Delivery data](#delivery-data)) | `nse_cm_delivery` |
 | F&O daily prices | `ingest_fno_bhavcopy --latest --lookback 5` | `fno_price_history` |
 | Index prices | `ingest_index_bhavcopy --latest --lookback 5` | `index_price_history` |
 | Corporate announcements | `ingest_corporate_announcements --latest --lookback 1` (every minute) | `corporate_announcements` |
@@ -144,6 +145,23 @@ Notes:
 - **There are no cron entries for the maintenance commands** `purge_expired_fno_contracts`
   or `purge_duplicate_bhavcopies`. They are currently run manually. See
   [Recommended hardening](#recommended-hardening).
+
+### Delivery data
+
+`ingest_delivery_bhavcopy` loads `DELIV_QTY`/`DELIV_PER` from the NSE full
+bhavcopy into `nse_cm_delivery` (1 year kept). It needs migration
+`dailypricehistory.0007` and the regular bhavcopy for the date already ingested.
+Suggested cron entry (same window as the price ingest, with `flock` and captured
+output so failures are not silent):
+
+```
+*/15 4-8 * * * flock -n /tmp/ingest_delivery_bhavcopy.lock bash -c 'cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_delivery_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1'
+```
+
+Backfill (at most 365 days; older dates are skipped):
+`manage.py ingest_delivery_bhavcopy --from <date> --delay 2 --retries 3`.
+Retention is manual like the other purges:
+`manage.py purge_old_delivery` (dry run), then `--apply`.
 
 ### Corporate announcements
 

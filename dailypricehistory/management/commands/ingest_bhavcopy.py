@@ -134,6 +134,9 @@ def _local_nse_holidays():
 class Command(BaseCommand):
     help = "Download NSE CM bhavcopy files and ingest them into the database."
 
+    # ``NSEArchives`` method used to fetch a day's file (subclasses override).
+    download_method = "bhavcopy_save"
+
     def add_arguments(self, parser):
         mode = parser.add_mutually_exclusive_group()
         mode.add_argument(
@@ -360,7 +363,7 @@ class Command(BaseCommand):
         for attempt in range(1, self.retries + 1):
             self._throttle()
             try:
-                saved = self.archives.bhavcopy_save(
+                saved = getattr(self.archives, self.download_method)(
                     day, str(self.data_dir), skip_if_present=True
                 )
                 break

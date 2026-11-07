@@ -150,6 +150,18 @@ UDiFF-only columns with no legacy equivalent: `Sgmt`, `Src`, `FinInstrmTp`,
 
 ---
 
+## 3a. Full bhavcopy (`sec_bhavdata_full_22Oct2026bhav.csv`)
+
+Legacy-style header (with spaces after commas): `SYMBOL, SERIES, DATE1,
+PREV_CLOSE, OPEN_PRICE, HIGH_PRICE, LOW_PRICE, LAST_PRICE, CLOSE_PRICE,
+AVG_PRICE, TTL_TRD_QNTY, TURNOVER_LACS, NO_OF_TRADES, DELIV_QTY, DELIV_PER`.
+Checked against the regular bhavcopy for 2026-10-22: every `(symbol, series)` in the
+full file is in the regular one (3,502 of 3,649; the rest are mostly `N*`/`Y*`/`Z*`
+debt series, `TB`, `SG`, `BL`), and open/high/low/close/last/prev close/volume/
+trades match on all rows. Turnover is in lakhs (±₹500 rounding). No ISIN. The only
+extra data are `DELIV_QTY` and `DELIV_PER` (`-` for BE/BZ); `AVG_PRICE` is
+derivable. Downloaded with `NSEArchives.full_bhavcopy_save`.
+
 ## 4. Sources
 
 - NSE Forms & Formats / UDiFF page: https://www.nseindia.com/static/resources/forms-formats-members

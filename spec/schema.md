@@ -22,7 +22,10 @@ REAL for prices/turnover).
 3. **Series is a day-level attribute**, a FK to a `series` lookup table (seeded from the
    NSE Legend of Series). Same ISIN can appear in multiple series rows on the same day
    (e.g. `EQ` + `BL`), so the price key is `(instrument_ticker, trade_date, series)`.
-4. **No delivery columns** — `DELIV_QTY`/`DELIV_PER` do not exist in the UDiFF format
+4. **No delivery columns in the price table** — delivery data now lives in a separate
+   1-year table, `nse_cm_delivery` (PK = `nse_cm_price_history.id`, `trade_date`,
+   `deliv_qty`, `deliv_per`), loaded from the NSE full bhavcopy by
+   `ingest_delivery_bhavcopy`. Original rationale: `DELIV_QTY`/`DELIV_PER` do not exist in the UDiFF format
    (delivery data left the bhavcopy in the 2024 transition), and `DELIV_PER` is derivable
    anyway.
 5. **Ingest provenance**: every price row references `bhavcopy_files`, making ingestion

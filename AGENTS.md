@@ -135,6 +135,29 @@ Guarantees:
 - Progress (INFO) and failures (ERROR with traceback) go to console and
   `logs/pipeline.log`; failures exit non-zero.
 
+### Delivery (full bhavcopy) ingest
+
+```
+python manage.py ingest_delivery_bhavcopy [same options as ingest_bhavcopy]
+python manage.py purge_old_delivery [--apply]
+```
+
+The NSE full bhavcopy (`sec_bhavdata_full_*.csv`, via `full_bhavcopy_save`) equals
+the regular bhavcopy on every price/volume column; its only extra data are
+`DELIV_QTY` and `DELIV_PER`. `ingest_delivery_bhavcopy` stores just those in
+`nse_cm_delivery`, whose primary key is the matching `nse_cm_price_history` id
+(`JOIN nse_cm_delivery d ON d.price_id = p.id`). Same guarantees as
+`ingest_bhavcopy` (restart-safe, holiday-aware, file-date-authoritative), plus:
+
+- The regular bhavcopy for a date must be ingested first; the full file has no
+  ISIN, so `(symbol, series)` is resolved onto that date's price rows. A date with
+  no price rows fails and is retried by the next run; unmatched or ambiguous
+  symbols are logged and skipped.
+- `-` delivery values (BE/BZ series) are stored as NULL.
+- Only the last 365 days are kept: older dates are not fetched, and
+  `purge_old_delivery --apply` (dry run by default) deletes older rows. Price rows
+  are never touched; deleting a price row cascades to its delivery row.
+
 ### F&O bhavcopy ingest
 
 ```

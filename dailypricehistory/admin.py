@@ -1,6 +1,16 @@
 from django.contrib import admin
 
-from .models import BhavcopyFile, NSECmPriceHistory
+from .models import BhavcopyFile, NSECmDelivery, NSECmPriceHistory
+
+
+@admin.register(NSECmDelivery)
+class NSECmDeliveryAdmin(admin.ModelAdmin):
+    list_display = ["price", "trade_date", "deliv_qty", "deliv_per"]
+    list_filter = ["trade_date"]
+    date_hierarchy = "trade_date"
+    raw_id_fields = ["price"]
+    ordering = ["-trade_date"]
+    list_per_page = 100
 
 
 @admin.register(BhavcopyFile)
