@@ -242,6 +242,13 @@ class ExtractCommandTests(TestCase):
         self.assertIn("raw/DENTA/FY2027/Q2/standalone/211600.xml", paths)
         self.assertEqual(paths[-1], f"{BASE}/_manifest.json")  # manifest is written last
 
+    def test_newest_filings_are_extracted_first(self):
+        old = make_filing(self.inst, 1, hours=0, consolidated=True)
+        new = make_filing(self.inst, 2, hours=500, consolidated=False)
+        self._run(limit=1)
+        old.refresh_from_db(); new.refresh_from_db()
+        self.assertEqual((new.extraction_status, old.extraction_status), ("done", "pending"))
+
     def test_limit_and_argument_validation(self):
         for n in (1, 2, 3):
             make_filing(self.inst, n, hours=n, consolidated=bool(n % 2))

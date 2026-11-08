@@ -1,7 +1,8 @@
 """Download each listed filing's XBRL, split it into statements and upload them.
 
 Works through ``integrated_filings`` rows whose ``extraction_status`` is
-``pending`` (or ``failed`` with attempts left), oldest broadcast first. For each
+``pending`` (or ``failed`` with attempts left), **newest broadcast first** (so fresh
+filings are never stuck behind a backfill). For each
 filing it:
 
 1. downloads the XBRL XML from NSE,
@@ -107,7 +108,7 @@ class Command(BaseCommand):
             ],
             extraction_attempts__lt=options["max_attempts"],
         )
-        return list(qs.order_by("broadcast_at")[: options["limit"]])
+        return list(qs.order_by("-broadcast_at")[: options["limit"]])
 
     # ---------------------------------------------------------------- process
 

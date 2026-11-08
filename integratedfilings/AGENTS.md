@@ -71,7 +71,7 @@ filings/{symbol}/{fy}/{quarter}/{basis}/_manifest.json     statements present (w
   `role_code` and `entries`: one entry per period (P&L of a Q2 filing has Q2 and H1; Q4 has Q4 and
   FY; a balance sheet has an `as_of` date). Statement names come from `jugaad-xbrl`.
 - **Status flow**: `pending` -> `done`, or `failed` (+1 attempt, error saved). `pending` and
-  `failed` with attempts left are picked up oldest-broadcast first, `--limit` per run. After
+  `failed` with attempts left are picked up newest-broadcast first (fresh filings are never stuck behind a backfill), `--limit` per run. After
   `--max-attempts` (3) a filing is left `failed`; `--seq-id N` re-runs one regardless. A crash
   leaves a filing `pending`; the re-run overwrites, so it is safe. The command carries on past a
   failed filing and exits 1 at the end. Governance filings and rows without a URL are not processed.
