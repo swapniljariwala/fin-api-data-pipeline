@@ -347,6 +347,43 @@ class ExtractCommandTests(TestCase):
         old.refresh_from_db(); new.refresh_from_db()
         self.assertEqual((new.extraction_status, old.extraction_status), ("done", "pending"))
 
+    def test_retry_missing_retries_only_what_nse_did_not_serve(self):
+        gone = make_filing(self.inst, 1, hours=0, consolidated=True, extraction_status="failed",
+                           extraction_attempts=3,
+                           extraction_error="HTTPError: 404 Client Error: Not Found for url: x")
+        empty = make_filing(self.inst, 2, hours=1, consolidated=False, extraction_status="failed",
+                            extraction_attempts=3,
+                            extraction_error="ExtractionError: download is not XML (0 bytes)")
+        parser = make_filing(self.inst, 3, hours=2, consolidated=None, extraction_status="failed",
+                             extraction_attempts=3,
+                             extraction_error="ExtractionError: parse failed: ValueError: cannot identify the filing format")
+        parser.consolidated = True; parser.period_end = date(2026, 6, 30); parser.save()
+        # not picked up by a normal run (attempts exhausted) ...
+        session = self._run()
+        session.get.assert_not_called()
+        # ... but the weekly retry takes the two NSE-side failures, not the parser failure
+        session = self._run(retry_missing=True)
+        self.assertEqual(session.get.call_count, 2)
+        for f in (gone, empty, parser):
+            f.refresh_from_db()
+        self.assertEqual((gone.extraction_status, empty.extraction_status), ("done", "done"))
+        self.assertEqual(parser.extraction_status, "failed")
+        self.assertEqual(parser.extraction_attempts, 3)
+
+    def test_retry_missing_that_fails_again_stays_failed(self):
+        f = make_filing(self.inst, 1, extraction_status="failed", extraction_attempts=3,
+                        extraction_error="HTTPError: 404 Client Error: Not Found for url: x")
+        resp = mock.Mock(content=b"", raise_for_status=mock.Mock(
+            side_effect=requests.HTTPError("404", response=mock.Mock(status_code=404))))
+        session = mock.MagicMock(); session.get.return_value = resp
+        with mock.patch(f"{COMMAND}.requests.Session", return_value=session):
+            with self.assertRaises(CommandError):
+                call_command("extract_integrated_filings", local_dir=str(self.root), delay=0,
+                             retry_missing=True)
+        f.refresh_from_db()
+        self.assertEqual(f.extraction_status, "failed")
+        self.assertEqual(f.extraction_attempts, 4)  # counted, but still picked up next week
+
     def test_limit_and_argument_validation(self):
         for n in (1, 2, 3):
             make_filing(self.inst, n, hours=n, consolidated=bool(n % 2))

@@ -22,6 +22,10 @@ it is retried by later runs until ``--max-attempts``. A crash mid-filing leaves
 it ``pending`` and the next run redoes it (uploads overwrite, so that is safe).
 The run continues past a failed filing and exits non-zero at the end.
 
+``--retry-missing`` re-tries ``failed`` filings whose problem is on NSE's side (HTTP 404, or an empty /
+non-XML download) whatever their attempt count, once per run; schedule it weekly in case NSE republishes
+the file. Other failures (e.g. an unsupported taxonomy) are not touched.
+
 ``--rebuild`` re-creates the parsed objects of filings that are already ``done`` but have
 no objects in the per-release layout (older runs wrote one shared folder per quarter, or
 stored only the raw XML for a superseded release). It reads the raw XML from the bucket, so
@@ -39,7 +43,7 @@ import time
 import requests
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from django.db.models import CharField, Exists, OuterRef, Value
+from django.db.models import CharField, Exists, OuterRef, Q, Value
 from django.db.models.functions import Cast, Concat
 from django.utils import timezone
 
@@ -53,6 +57,8 @@ FINANCIALS = "Integrated Filing- Financials"
 BLOCKED = object()  # _process result: NSE refused the download (HTTP 403/429)
 BLOCK_STATUSES = (403, 429)
 REBUILD_FAILED = "rebuild failed"
+# failures caused by NSE not serving the file (not by our parser): worth retrying later
+SOURCE_MISSING_ERRORS = ("HTTPError: 404", "ExtractionError: download is not XML")
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -77,6 +83,9 @@ class Command(BaseCommand):
                             help="seconds between downloads (default: 1.0, 0 disables)")
         parser.add_argument("--timeout", type=float, default=60,
                             help="download timeout in seconds (default: 60)")
+        parser.add_argument("--retry-missing", action="store_true",
+                            help="re-try failed filings that NSE did not serve (404 / empty file), "
+                                 "regardless of attempts; for a weekly job")
         parser.add_argument("--rebuild", action="store_true",
                             help="re-create parsed objects of done filings from the raw XML "
                                  "already in the bucket (no NSE access)")
@@ -133,6 +142,12 @@ class Command(BaseCommand):
             qs = qs.filter(raw__symbol=options["symbol"])
         if options["seq_id"]:
             return list(qs.filter(seq_id=options["seq_id"]))
+        if options["retry_missing"]:
+            missing = Q()
+            for prefix in SOURCE_MISSING_ERRORS:
+                missing |= Q(extraction_error__startswith=prefix)
+            qs = qs.filter(extraction_status=IntegratedFiling.ExtractionStatus.FAILED).filter(missing)
+            return list(qs.order_by("-broadcast_at")[: options["limit"]])
         if options["rebuild"]:
             in_new_layout = IntegratedFilingStatement.objects.filter(
                 filing=OuterRef("pk"),
