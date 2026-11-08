@@ -130,6 +130,10 @@ CRON_TZ=Asia/Kolkata
 # skipping the Litestream snapshot window (05:30-05:45). One lock so list and extraction never overlap.
 12,27,42,57 0-4,6-23 * * * flock -n /tmp/integrated_filings.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_integrated_filings --latest --lookback 3 >> logs/cron.log 2>&1; env/bin/python manage.py extract_integrated_filings >> logs/cron.log 2>&1"
 12,27,57 5 * * * flock -n /tmp/integrated_filings.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_integrated_filings --latest --lookback 3 >> logs/cron.log 2>&1; env/bin/python manage.py extract_integrated_filings >> logs/cron.log 2>&1"
+# Corporate actions: live NSE feed by ex-date, daily after the bhavcopy window so ex-date price checks see fresh closes
+12 9 * * * flock -n /tmp/ingest_corporate_actions.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_actions --latest >> logs/cron.log 2>&1"
+# Rotate logs/cron.log weekly (Sun 03:30 IST): rename, wait for in-flight appends, gzip, drop archives older than 28 days
+30 3 * * 0 bash -c "cd /home/swapnil/apps/fin-api-data-pipeline/logs && d=\$(date +\%F) && [ -s cron.log ] && mv cron.log cron.log.\$d && sleep 75 && gzip -f cron.log.\$d && find . -maxdepth 1 -name 'cron.log.*.gz' -mtime +28 -delete"
 ```
 
 The Litestream daily snapshot of the 5.4 GB DB starts at 05:30 IST (00:00 UTC)
@@ -147,7 +151,7 @@ responsive. Run migrations and other heavy DB work outside 05:30–05:45.
 | Mutual fund NAV | `ingest_mf_nav --latest --lookback 5` (daily 09:30 IST) | `mutual_fund_nav_history` |
 | Integrated filings (list) | `ingest_integrated_filings --latest --lookback 3` (every 15 min, :12/:27/:42/:57, see [Integrated filings](#integrated-filings)) | `integrated_filings` |
 | Integrated filings (extraction) | `extract_integrated_filings` (same job, right after the list ingest) | `integrated_filing_statements`, GCS bucket |
-| Corporate actions | `ingest_corporate_actions --latest` — **not scheduled yet** (see [Corporate actions](#corporate-actions)) | `corporate_actions`, `corporate_action_legs` |
+| Corporate actions | `ingest_corporate_actions --latest` (daily 09:12 IST, scheduled 2026-11-08, see [Corporate actions](#corporate-actions)) | `corporate_actions`, `corporate_action_legs` |
 
 Notes:
 
@@ -222,7 +226,7 @@ Configuration lives in the server's `.env` (loaded by `settings.py`, git-ignored
 | Variable | Value |
 |---|---|
 | `GCS_INTEGRATED_FILINGS_BUCKET` | `bhav-marketsetup-db-replication` (the Litestream bucket; our objects use the `raw/` and `filings/` prefixes, which its lifecycle rule - it only deletes under `announcements/` - does not touch) |
-| `GOOGLE_APPLICATION_CREDENTIALS` | `/home/swapnil/service-account.json`, the same key Litestream uses |
+| `GOOGLE_APPLICATION_CREDENTIALS` | `/home/swapnil/service-account.json`, the same key Litestream and fin-api use (all run as `swapnil`; file mode `600` since 2026-11-08) |
 
 Operations:
 
@@ -270,12 +274,9 @@ Result on prod: 3,804 actions; 3,803 `auto`, 1 `needs_review` (QUINT, a
 both sides, e.g. a just-listed stock or an ex-date not yet traded; re-checked on
 later runs), 0 failed.
 
-**Not on cron yet.** Suggested entry (daily, after the 04:00–08:00 bhavcopy window
-so ex-date price checks see fresh closes):
-
-```
-30 8 * * * flock -n /tmp/ingest_corporate_actions.lock bash -c 'cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_actions --latest >> logs/cron.log 2>&1'
-```
+**On cron since 2026-11-08**: daily at 09:12 IST (after the 04:00-08:59 bhavcopy window, before the 09:30
+mutual-fund NAV job), `flock`-wrapped, output to `logs/cron.log`. A first manual run on that day fetched
+103 records in 7 s. It had not been scheduled before, so ex-dates from 2 Nov were caught up by that run.
 
 Review queue and re-checks:
 
@@ -481,8 +482,8 @@ sqlite3 db/db.sqlite3 \
 - App log: `/home/swapnil/apps/fin-api-data-pipeline/logs/pipeline.log`,
   rotated daily at midnight, 7 days retained (`pipeline/settings.py` `LOGGING`).
 - Cron-captured log: `logs/cron.log` — stdout/stderr of the corporate-announcements
-  and mutual-fund NAV jobs (the cron entries that redirect their output). Not
-  rotated; watch its size.
+  and mutual-fund NAV jobs (the cron entries that redirect their output). Rotated weekly
+  (Sun 03:30 IST) into `cron.log.YYYY-MM-DD.gz`, archives older than 28 days deleted.
 - Backfill log: `logs/backfill_corporate_announcements.log` — one-off 12-month
   announcements backfill (see [Corporate announcements](#corporate-announcements));
   `logs/backfill_mf_nav.log` — one-off 10-year mutual-fund NAV backfill (see

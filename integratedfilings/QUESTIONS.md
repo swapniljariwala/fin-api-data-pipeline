@@ -23,10 +23,10 @@ Status: `[ ]` open, `[x]` answered.
    reporting period blanks most of `canonical()`; (b) optional mapping gaps: bank `total_expenses`,
    GI `total_income` / `total_expenses`, bank and insurer `total_equity` (needs a sum)?
    Answer: Yes, both added to the TODO in `AGENTS.md` (2026-11-08).
-5. [ ] **Prod housekeeping.** (a) rotate `logs/cron.log` (20 MB, unrotated)? (b) `chmod 600
+5. [x] **Prod housekeeping.** (a) rotate `logs/cron.log` (20 MB, unrotated)? (b) `chmod 600
    /home/swapnil/service-account.json` (currently readable by all users)? (c) put
    `ingest_corporate_actions` on cron (it is not scheduled; DEPLOYMENT.md has a suggested entry)?
-   Answer:
+   Answer: Yes to all three, done 2026-11-08: weekly `cron.log` rotation, key `chmod 600`, corporate actions on cron at 09:12 IST (see `docs/DEPLOYMENT.md`).
 6. [ ] **Filings NSE does not serve.** 8 are HTTP 404 and 1 is an empty file on NSE's archive. Leave as
    `failed`, or retry them automatically after some days in case NSE republishes?
    Answer:
