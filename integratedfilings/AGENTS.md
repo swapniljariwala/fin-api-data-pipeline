@@ -158,4 +158,19 @@ filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        statement
   NSE list says FY2027 Q2"). Option when needed: store the company's own `fy`/`quarter` (from the filing's
   `report`) in the manifest and as columns on `integrated_filings`, without changing the paths. Readers must
   discover statements per filing and not assume Mar/Sep (see `FIN_API_HANDOFF.md`).
+- **`jugaad-xbrl`: `canonical()` when the filer mis-writes the reporting period.** HDFC Life Dec-2025
+  consolidated (Q3 FY26; Original, in `data/` and on prod) has `DateOfStartOfReportingPeriod` =
+  `2025-01-10` (day and month swapped, should be 2025-10-01), so `reporting_period` is
+  `2025-01-10..2025-12-31` and `canonical()` finds no facts: net profit, tax, PBT, EPS, total income and
+  total expenses all come out null. `to_dict()` is unaffected (it labels periods Q3 / 9M correctly). Suggested fix:
+  when the header period matches no fact context, fall back to the period of the facts (the shortest
+  duration ending on the reporting end date). The pipeline itself is unaffected.
+- **`jugaad-xbrl`: optional `canonical()` mapping gaps** (design choices, not failures; nulls are legitimate
+  today). Candidates found in the real filings, all would need a semantic decision:
+  banking `total_expenses` -> `ExpenditureExcludingProvisionsAndContingencies` (excludes provisions) and
+  `revenue_from_operations` -> `Income` (equals `SegmentRevenueFromOperations`);
+  general insurance `total_income` -> `OperatingIncome` (premium earned + investment income + other) and
+  `total_expenses` -> `OperatingExpenses`; banking / life / general `total_equity` only by summing
+  (`Capital` + `ReservesAndSurplus`, or `ShareCapital` + `ReservesAndSurplus`) because no single equity
+  line is filed. Until decided, readers should treat these nulls as "not reported" and use the statements.
 

@@ -19,10 +19,10 @@ Status: `[ ]` open, `[x]` answered.
    company's own fiscal quarter. Keep as is (the mismatch is recorded in the manifest), or add the
    company's own `fy`/`quarter` to the manifest / table?
    Answer: Keep the Indian April-March labels for now; storing the company's own fiscal quarter is in the TODO in `AGENTS.md` (2026-11-08).
-4. [ ] **Library issues to track.** Add to the TODO: (a) HDFC Life Dec-2025 filing with a mis-written
+4. [x] **Library issues to track.** Add to the TODO: (a) HDFC Life Dec-2025 filing with a mis-written
    reporting period blanks most of `canonical()`; (b) optional mapping gaps: bank `total_expenses`,
    GI `total_income` / `total_expenses`, bank and insurer `total_equity` (needs a sum)?
-   Answer:
+   Answer: Yes, both added to the TODO in `AGENTS.md` (2026-11-08).
 5. [ ] **Prod housekeeping.** (a) rotate `logs/cron.log` (20 MB, unrotated)? (b) `chmod 600
    /home/swapnil/service-account.json` (currently readable by all users)? (c) put
    `ingest_corporate_actions` on cron (it is not scheduled; DEPLOYMENT.md has a suggested entry)?
