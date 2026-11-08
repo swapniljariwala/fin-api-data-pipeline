@@ -30,8 +30,8 @@ Status: `[ ]` open, `[x]` answered.
 6. [x] **Filings NSE does not serve.** 8 are HTTP 404 and 1 is an empty file on NSE's archive. Leave as
    `failed`, or retry them automatically after some days in case NSE republishes?
    Answer: B: weekly automatic retry (`extract_integrated_filings --retry-missing`, Sun 11:12 IST) of 404 / empty-file failures only (2026-11-08).
-7. [ ] **ISIN-less instrument.** NAHARENTP (4 filings) has no ISIN in our instrument master. Leave it
+7. [x] **ISIN-less instrument.** NAHARENTP (4 filings) has no ISIN in our instrument master. Leave it
    (it fixes itself when the master gets the ISIN) or fix now?
-   Answer:
+   Answer: B (fix it), but the direct write to the prod DB was blocked; the exact SQL is in the TODO in `AGENTS.md`, to be applied by hand or after granting permission (2026-11-08).
 8. [x] **Push.** Push the unpushed docs commits to `origin/main`?
    Answer: Pushed on 2026-11-08 together with the `--retry-missing` deploy (a deploy needs everything on `origin/main`).

@@ -178,4 +178,27 @@ filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        statement
   `total_expenses` -> `OperatingExpenses`; banking / life / general `total_equity` only by summing
   (`Capital` + `ReservesAndSurplus`, or `ShareCapital` + `ReservesAndSurplus`) because no single equity
   line is filed. Until decided, readers should treat these nulls as "not reported" and use the statements.
+- **Prod data fix: NAHARENTP is on an ISIN-less duplicate instrument (apply by hand; a direct write to the
+  shared prod DB was blocked on 2026-11-08).** NAHARENTP is Nahar Industrial Enterprises Limited (main board,
+  not SME). Our master already has it as instrument `1946` (`NAHAR INDS ENT LTD`, ISIN `INE289A01011`, prices up
+  to 2026-11-06, 12 other filings), mapped under the symbol `NAHARINDUS`; the filing feed now uses `NAHARENTP`
+  (apparently a symbol change; NSE's live quote lookup returned nothing to confirm it). Our ingest therefore
+  created ISIN-less instrument `8094` for 4 filings (seq 165157, 165158, 187299, 187303) and a symbol-map row.
+  Fix, one short transaction (print the ids first so it can be reversed):
+  ```sql
+  select group_concat(id) from integrated_filings where instrument_id=8094;
+  BEGIN IMMEDIATE;
+  UPDATE integrated_filings SET instrument_id=1946 WHERE instrument_id=8094;
+  UPDATE nse_symbols_instrument_map SET instrument_id=1946 WHERE instrument_id=8094;
+  DELETE FROM instruments WHERE id=8094 AND isin IS NULL
+    AND NOT EXISTS (SELECT 1 FROM integrated_filings WHERE instrument_id=8094)
+    AND NOT EXISTS (SELECT 1 FROM nse_symbols_instrument_map WHERE instrument_id=8094)
+    AND NOT EXISTS (SELECT 1 FROM corporate_announcements WHERE instrument_id=8094)
+    AND NOT EXISTS (SELECT 1 FROM corporate_actions WHERE instrument_id=8094)
+    AND NOT EXISTS (SELECT 1 FROM nse_cm_price_history WHERE instrument_id=8094);
+  COMMIT;
+  ```
+  Until then, lookups of Nahar by ISIN miss its 4 newest filings (Mar-2026, Jun-2026). Related idea: when the feed
+  has an unknown symbol, ingest could try to match the company name to an existing instrument before creating an
+  ISIN-less one (renamed symbols are the usual cause).
 
