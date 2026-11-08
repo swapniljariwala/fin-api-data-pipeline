@@ -6,10 +6,10 @@ question when given. Longer-running work items are in the `## TODO` section of
 
 Status: `[ ]` open, `[x]` answered.
 
-1. [ ] **fin-api handoff note.** Write a short note for the fin-api agent (latest-release rule,
+1. [x] **fin-api handoff note.** Write a short note for the fin-api agent (latest-release rule,
    join on `instrument_id`, use `object_path` as stored, discover statements per filing, page
    `related_party_transactions`, null means "not reported")?
-   Answer:
+   Answer: Yes. Written to `FIN_API_HANDOFF.md` (2026-11-08).
 2. [ ] **Orphan cleanup.** After the prod re-key is verified, delete the old shared-folder objects
    in the bucket (`filings/{symbol}/{fy}/{quarter}/{basis}/{statement}.json`, old `canonical.json` /
    `_manifest.json`)? Needs the verification report first. 7-day soft delete is the safety net.
