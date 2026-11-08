@@ -150,4 +150,12 @@ filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        statement
   (their attempt count is 3, so they are picked up again; downloads from NSE, 1 s apart).
   *Decision (2026-11-08):* no raw-XML-only fallback for now, wait for the library. If the library is slow, the
   option is to mark such filings `done` with a note "no taxonomy: raw XML only" so they stop counting as failures.
+- **Company's own fiscal year and quarter (decided later; today paths use Indian April-March labels for
+  everyone).** For companies with a calendar or Jul-Jun year the path `fy`/`quarter` differs from their own
+  fiscal quarter (31 filings, 16 companies on 2026-11-08; e.g. Schaeffler India, calendar year: its Jun-2026
+  filing is labelled FY2027 Q1 here but is its own half-year end, with balance sheet and cash flow). The
+  mismatch is already recorded in the manifest `warnings` / `extraction_error` ("filing header says FY2026 Q3,
+  NSE list says FY2027 Q2"). Option when needed: store the company's own `fy`/`quarter` (from the filing's
+  `report`) in the manifest and as columns on `integrated_filings`, without changing the paths. Readers must
+  discover statements per filing and not assume Mar/Sep (see `FIN_API_HANDOFF.md`).
 

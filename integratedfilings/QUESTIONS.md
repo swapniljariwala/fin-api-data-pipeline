@@ -14,11 +14,11 @@ Status: `[ ]` open, `[x]` answered.
    in the bucket (`filings/{symbol}/{fy}/{quarter}/{basis}/{statement}.json`, old `canonical.json` /
    `_manifest.json`)? Needs the verification report first. 7-day soft delete is the safety net.
    Answer:
-3. [ ] **Fiscal-quarter labels.** Paths use the Indian April-March `fy`/`quarter` for every company.
+3. [x] **Fiscal-quarter labels.** Paths use the Indian April-March `fy`/`quarter` for every company.
    For companies with a calendar or Jul-Jun year (31 filings, 16 companies so far) this differs from the
    company's own fiscal quarter. Keep as is (the mismatch is recorded in the manifest), or add the
    company's own `fy`/`quarter` to the manifest / table?
-   Answer:
+   Answer: Keep the Indian April-March labels for now; storing the company's own fiscal quarter is in the TODO in `AGENTS.md` (2026-11-08).
 4. [ ] **Library issues to track.** Add to the TODO: (a) HDFC Life Dec-2025 filing with a mis-written
    reporting period blanks most of `canonical()`; (b) optional mapping gaps: bank `total_expenses`,
    GI `total_income` / `total_expenses`, bank and insurer `total_equity` (needs a sum)?
