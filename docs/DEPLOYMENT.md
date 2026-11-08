@@ -68,6 +68,8 @@ Observed versions (prod):
 | Python | 3.14.4 |
 | Django | 6.1.1 |
 | jugaad-data | 0.37.0 |
+| jugaad-xbrl | 0.4.0 |
+| google-cloud-storage | 3.17.1 |
 | python-dotenv | 1.2.3 |
 
 Dependencies are declared in `requirements.txt` and installed **into the venv**.
@@ -124,6 +126,10 @@ CRON_TZ=Asia/Kolkata
 * * * * * flock -n /tmp/ingest_corporate_announcements.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_announcements --latest --lookback 1 >> logs/cron.log 2>&1"
 # Mutual fund NAV: AMFI publishes the session's report the same evening; run after the bhavcopy window
 30 9 * * * flock -n /tmp/ingest_mf_nav.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_mf_nav --latest --lookback 5 >> logs/cron.log 2>&1"
+# Integrated filings: NSE release list, then XBRL -> statements -> GCS. Every 15 min at :12/:27/:42/:57,
+# skipping the Litestream snapshot window (05:30-05:45). One lock so list and extraction never overlap.
+12,27,42,57 0-4,6-23 * * * flock -n /tmp/integrated_filings.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_integrated_filings --latest --lookback 3 >> logs/cron.log 2>&1; env/bin/python manage.py extract_integrated_filings >> logs/cron.log 2>&1"
+12,27,57 5 * * * flock -n /tmp/integrated_filings.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_integrated_filings --latest --lookback 3 >> logs/cron.log 2>&1; env/bin/python manage.py extract_integrated_filings >> logs/cron.log 2>&1"
 ```
 
 The Litestream daily snapshot of the 5.4 GB DB starts at 05:30 IST (00:00 UTC)
@@ -139,6 +145,8 @@ responsive. Run migrations and other heavy DB work outside 05:30–05:45.
 | Index prices | `ingest_index_bhavcopy --latest --lookback 5` | `index_price_history` |
 | Corporate announcements | `ingest_corporate_announcements --latest --lookback 1` (every minute) | `corporate_announcements` |
 | Mutual fund NAV | `ingest_mf_nav --latest --lookback 5` (daily 09:30 IST) | `mutual_fund_nav_history` |
+| Integrated filings (list) | `ingest_integrated_filings --latest --lookback 3` (every 15 min, :12/:27/:42/:57, see [Integrated filings](#integrated-filings)) | `integrated_filings` |
+| Integrated filings (extraction) | `extract_integrated_filings` (same job, right after the list ingest) | `integrated_filing_statements`, GCS bucket |
 | Corporate actions | `ingest_corporate_actions --latest` — **not scheduled yet** (see [Corporate actions](#corporate-actions)) | `corporate_actions`, `corporate_action_legs` |
 
 Notes:
@@ -200,6 +208,40 @@ env/bin/python manage.py ingest_corporate_announcements --from 2026-01-01 --to 2
 env/bin/python manage.py ingest_corporate_announcements --days 30
 env/bin/python manage.py ingest_corporate_announcements --symbol RELIANCE --days 30
 ```
+
+### Integrated filings
+
+Two commands in one `flock`-wrapped cron job (see the crontab above): the list ingest
+records NSE's Integrated Filing releases, then the extraction downloads each pending
+filing's XBRL, splits it into one JSON per statement and uploads to GCS. Details, bucket
+layout and the pending/done/failed status flow:
+[`integratedfilings/AGENTS.md`](../integratedfilings/AGENTS.md).
+
+Configuration lives in the server's `.env` (loaded by `settings.py`, git-ignored):
+
+| Variable | Value |
+|---|---|
+| `GCS_INTEGRATED_FILINGS_BUCKET` | `bhav-marketsetup-db-replication` (the Litestream bucket; our objects use the `raw/` and `filings/` prefixes, which its lifecycle rule - it only deletes under `announcements/` - does not touch) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | `/home/swapnil/service-account.json`, the same key Litestream uses |
+
+Operations:
+
+```bash
+# status of extraction
+sqlite3 /mnt/blockstorage/db/db.sqlite3 \
+  "SELECT extraction_status, count(*) FROM integrated_filings GROUP BY 1;"
+# what failed, and why
+sqlite3 /mnt/blockstorage/db/db.sqlite3 \
+  "SELECT seq_id, extraction_attempts, substr(extraction_error,1,120) FROM integrated_filings WHERE extraction_status='failed';"
+# re-run one filing, or raise the retry limit for stuck ones
+env/bin/python manage.py extract_integrated_filings --seq-id 211600
+env/bin/python manage.py extract_integrated_filings --max-attempts 6
+# backfill the list for a period (then the cron drains the extraction, 200 filings per 15 min)
+env/bin/python manage.py ingest_integrated_filings --from 2026-10-01 --to 2026-10-31
+```
+
+The bucket has no object versioning (soft delete keeps removed or overwritten objects 7
+days). Do not run migrations or heavy backfills during 05:30-05:45 IST.
 
 ### Corporate actions
 
@@ -446,7 +488,7 @@ sqlite3 db/db.sqlite3 \
   `logs/backfill_mf_nav.log` — one-off 10-year mutual-fund NAV backfill (see
   [Mutual fund NAV](#mutual-fund-nav)).
 - App loggers (`dailypricehistory`, `fnopricehistory`, `indexpricehistory`,
-  `securityinfo`, `corporateannouncements`, `mfnavhistory`) log at INFO;
+  `securityinfo`, `corporateannouncements`, `mfnavhistory`, `integratedfilings`) log at INFO;
   everything else at WARNING+. Failures are logged at ERROR with a traceback and
   make the command exit non-zero.
 - The Go API service logs separately under `/home/swapnil/apps/fin-api/logs`.

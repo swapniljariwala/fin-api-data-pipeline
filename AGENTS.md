@@ -36,8 +36,10 @@ Current state:
   doubtful to `needs_review`.
 - Working `ingest_integrated_filings` management command (live NSE feed) into
   the `integratedfilings` app: records the list of NSE Integrated Filing
-  releases (one row per release, revisions included). The XBRL itself is not
-  yet downloaded or parsed.
+  releases (one row per release, revisions included). Working
+  `extract_integrated_filings` command downloads each release's XBRL, splits it into
+  statements with `jugaad-xbrl` and uploads them to a GCS bucket
+  (`GCS_INTEGRATED_FILINGS_BUCKET`), indexed in `integrated_filing_statements`.
 - Project-level logging: console + `logs/pipeline.log` (rotated daily, 7 days kept).
 - Object-store upload is a stub (`dailypricehistory/object_store.py`); to be
   implemented later.
@@ -76,7 +78,7 @@ Two production gotchas are called out there:
 | [`indexpricehistory/`](indexpricehistory/AGENTS.md) | Django app: index daily OHLC history | [AGENTS.md](indexpricehistory/AGENTS.md) |
 | [`corporateannouncements/`](corporateannouncements/AGENTS.md) | Django app: NSE corporate announcements feed | [AGENTS.md](corporateannouncements/AGENTS.md) |
 | [`corporateactions/`](corporateactions/AGENTS.md) | Django app: NSE corporate actions (dividend/split/bonus/...) | [AGENTS.md](corporateactions/AGENTS.md) |
-| [`integratedfilings/`](integratedfilings/AGENTS.md) | Django app: NSE Integrated Filing releases (list; XBRL extraction later) | [AGENTS.md](integratedfilings/AGENTS.md) |
+| [`integratedfilings/`](integratedfilings/AGENTS.md) | Django app: NSE Integrated Filing releases (list) + XBRL statement extraction to GCS | [AGENTS.md](integratedfilings/AGENTS.md) |
 | [`mfnavhistory/`](mfnavhistory/AGENTS.md) | Django app: AMFI mutual fund NAV history | [AGENTS.md](mfnavhistory/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
@@ -360,6 +362,26 @@ python manage.py ingest_integrated_filings --period-ended 30-Sep-2026 --from 202
 python manage.py ingest_integrated_filings --symbol TCS --days 60
 ```
 
+### Integrated filings extraction
+
+```
+python manage.py extract_integrated_filings [--bucket NAME | --local-dir PATH]
+                                            [--limit N] [--seq-id N] [--symbol SYM]
+                                            [--max-attempts N] [--delay SECONDS] [--timeout SECONDS]
+```
+
+Takes `integrated_filings` rows that are `pending` (or `failed` with attempts left), downloads
+the XBRL, splits it into one JSON per statement (all periods inside), uploads to the bucket
+named by `$GCS_INTEGRATED_FILINGS_BUCKET` (or `--bucket`; `--local-dir` for testing) and records
+them in `integrated_filing_statements`. Bucket layout, status flow and revision handling are in
+[`integratedfilings/AGENTS.md`](integratedfilings/AGENTS.md#extraction).
+
+```bash
+python manage.py extract_integrated_filings --local-dir /tmp/out --limit 5     # try locally
+python manage.py extract_integrated_filings                                    # to the bucket
+python manage.py extract_integrated_filings --seq-id 211600                    # redo one
+```
+
 ### Mutual fund NAV ingest
 
 ```
@@ -415,7 +437,7 @@ Guarantees:
 | File | Purpose |
 |---|---|
 | `manage.py` | Django CLI entry point (`DJANGO_SETTINGS_MODULE=pipeline.settings`). |
-| `requirements.txt` | Dependencies: `django`, `jugaad-data`, `python-dotenv`. Edit manually; install from it. |
+| `requirements.txt` | Dependencies: `django`, `google-cloud-storage`, `jugaad-data`, `jugaad-xbrl`, `python-dotenv`. Edit manually; install from it. |
 | `temp_bhavcopy.py` | Throwaway script: downloads one legacy-format NSE bhavcopy into `data/`. |
 | `README.md` | Project intro, setup and CLI reference. |
 | `.gitignore` | Ignore rules (`data/`, `db/`, `logs/`, `env/`, ...). |
