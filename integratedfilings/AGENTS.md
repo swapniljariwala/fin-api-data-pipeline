@@ -122,3 +122,21 @@ filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        statement
 - `ixbrl` is only a rendering of the same data; `xbrl_url` is the machine-readable file
   (on `nsearchives.nseindia.com`, no cookies needed).
 - No cron entry yet. Plan: every 15 minutes, ingest then extract in one `flock`-wrapped job, minutes `:12/:27/:42/:57`, skipping the 05:30-05:45 IST Litestream window.
+
+## TODO
+
+- **`jugaad-xbrl`: map `total_equity` and `paid_up_capital` for the `other_than_bank` format** (library
+  change, owner: the library; nothing to do in this repo until a release). For this older format
+  (e.g. L&T FY25 Q4, seq 89929 / 89932) `canonical.json` has both fields null although the filing carries
+  `ShareholdersFunds` (total equity) and `PaidUpValueOfEquityShareCapital`. The mapping file
+  `specs/canonical/other_than_bank.yaml` simply has no entry; add:
+  ```yaml
+  total_equity: [ShareholdersFunds]
+  paid_up_capital: [PaidUpValueOfEquityShareCapital]
+  ```
+  with a test on the L&T file. After the release: bump the pin in `requirements.txt`, deploy, then refresh the
+  affected filings from their stored raw XML with `extract_integrated_filings --rebuild --seq-id N`
+  (one per `other_than_bank` filing; no NSE access). Scope: only `canonical.json` of that format.
+  It does not cover banks / insurers (they file no single equity line, so `total_equity` stays null by
+  design) or the HDFC Life Dec-2025 file whose reporting period the filer mis-wrote.
+
