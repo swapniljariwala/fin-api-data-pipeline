@@ -13,7 +13,8 @@ filing it:
 4. records the statements in ``integrated_filing_statements`` and marks the
    filing ``done``.
 
-A filing that fails is marked ``failed`` with the error and an attempt counted;
+If NSE answers HTTP 403/429 the run stops at once (filing stays ``pending``, no attempt
+counted). A filing that fails otherwise is marked ``failed`` with the error and an attempt counted;
 it is retried by later runs until ``--max-attempts``. A crash mid-filing leaves
 it ``pending`` and the next run redoes it (uploads overwrite, so that is safe).
 The run continues past a failed filing and exits non-zero at the end.
@@ -38,6 +39,8 @@ from integratedfilings.storage import StorageError, get_storage
 logger = logging.getLogger(__name__)
 
 FINANCIALS = "Integrated Filing- Financials"
+BLOCKED = object()  # _process result: NSE refused the download (HTTP 403/429)
+BLOCK_STATUSES = (403, 429)
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -58,8 +61,8 @@ class Command(BaseCommand):
         parser.add_argument("--symbol", metavar="SYM", help="only this NSE symbol")
         parser.add_argument("--max-attempts", type=int, default=3,
                             help="give up on a failing filing after N attempts (default: 3)")
-        parser.add_argument("--delay", type=float, default=0.5,
-                            help="seconds between filings (default: 0.5, 0 disables)")
+        parser.add_argument("--delay", type=float, default=1.0,
+                            help="seconds between downloads (default: 1.0, 0 disables)")
         parser.add_argument("--timeout", type=float, default=60,
                             help="download timeout in seconds (default: 60)")
 
@@ -76,19 +79,30 @@ class Command(BaseCommand):
                     len(todo), storage)
         started = time.monotonic()
         done = failed = 0
+        blocked = False
         try:
             session = requests.Session()
             session.headers["User-Agent"] = USER_AGENT
             for i, filing in enumerate(todo):
                 if i and options["delay"]:
                     time.sleep(options["delay"])
-                if self._process(filing, storage, session, options["timeout"]):
+                outcome = self._process(filing, storage, session, options["timeout"])
+                if outcome is BLOCKED:
+                    blocked = True
+                    break
+                if outcome:
                     done += 1
                 else:
                     failed += 1
         finally:
-            logger.info("Integrated filings extraction finished in %.1fs: %d done, %d failed",
-                        time.monotonic() - started, done, failed)
+            logger.info("Integrated filings extraction finished in %.1fs: %d done, %d failed%s",
+                        time.monotonic() - started, done, failed,
+                        ", STOPPED: NSE refused a download" if blocked else "")
+        if blocked:
+            raise CommandError(
+                "NSE refused a download (HTTP 403/429); stopped early. The remaining filings "
+                "stay pending and no attempt was counted; try again later."
+            )
         if failed:
             raise CommandError(f"{failed} filing(s) failed; see the log (they are retried next run)")
 
@@ -127,6 +141,15 @@ class Command(BaseCommand):
                 storage.put(result.manifest_path, result.manifest_data)  # last
             self._record(filing, result, newer)
         except Exception as exc:  # one bad filing must not stop the run
+            response = getattr(exc, "response", None)
+            if isinstance(exc, requests.HTTPError) and getattr(
+                response, "status_code", None
+            ) in BLOCK_STATUSES:
+                # we are being throttled or blocked: do not hammer on, and do not
+                # burn the filing's attempts; it stays pending for a later run
+                logger.warning("seq_id %s: HTTP %s from NSE - stopping this run",
+                               filing.seq_id, response.status_code)
+                return BLOCKED
             if isinstance(exc, (ExtractionError, StorageError, requests.RequestException)):
                 logger.warning("seq_id %s (%s) failed: %s", filing.seq_id,
                                (filing.raw or {}).get("symbol"), exc)

@@ -242,6 +242,34 @@ class ExtractCommandTests(TestCase):
         self.assertIn("raw/DENTA/FY2027/Q2/standalone/211600.xml", paths)
         self.assertEqual(paths[-1], f"{BASE}/_manifest.json")  # manifest is written last
 
+    def test_http_429_stops_the_run_and_does_not_count_attempts(self):
+        a = make_filing(self.inst, 1, hours=0, consolidated=True)
+        b = make_filing(self.inst, 2, hours=1, consolidated=False)
+
+        def refuse():
+            raise requests.HTTPError("429", response=mock.Mock(status_code=429))
+
+        session = mock.MagicMock()
+        session.get.return_value = mock.Mock(content=b"", raise_for_status=refuse)
+        with mock.patch(f"{COMMAND}.requests.Session", return_value=session):
+            with self.assertRaises(CommandError) as ctx:
+                call_command("extract_integrated_filings", local_dir=str(self.root), delay=0)
+        self.assertIn("refused", str(ctx.exception))
+        self.assertEqual(session.get.call_count, 1)  # did not carry on to the second filing
+        for f in (a, b):
+            f.refresh_from_db()
+            self.assertEqual((f.extraction_status, f.extraction_attempts), ("pending", 0))
+
+    def test_default_delay_is_one_second(self):
+        make_filing(self.inst, 1)
+        make_filing(self.inst, 2, hours=1, consolidated=True)
+        session = mock.MagicMock()
+        session.get.return_value = mock.Mock(content=XML, raise_for_status=lambda: None)
+        with mock.patch(f"{COMMAND}.requests.Session", return_value=session), \
+                mock.patch(f"{COMMAND}.time.sleep") as sleep:
+            call_command("extract_integrated_filings", local_dir=str(self.root))
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [1.0])  # between the two
+
     def test_newest_filings_are_extracted_first(self):
         old = make_filing(self.inst, 1, hours=0, consolidated=True)
         new = make_filing(self.inst, 2, hours=500, consolidated=False)

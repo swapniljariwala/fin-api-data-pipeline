@@ -74,7 +74,7 @@ filings/{symbol}/{fy}/{quarter}/{basis}/_manifest.json     statements present (w
   `failed` with attempts left are picked up newest-broadcast first (fresh filings are never stuck behind a backfill), `--limit` per run. After
   `--max-attempts` (3) a filing is left `failed`; `--seq-id N` re-runs one regardless. A crash
   leaves a filing `pending`; the re-run overwrites, so it is safe. The command carries on past a
-  failed filing and exits 1 at the end. Governance filings and rows without a URL are not processed.
+  failed filing and exits 1 at the end. **HTTP 403/429 from NSE stops the run at once** (the filing stays `pending`, no attempt counted). Downloads are `--delay` (1.0 s) apart. Governance filings and rows without a URL are not processed.
 - **Revisions**: same symbol/quarter/basis -> the `filings/` objects are overwritten by the latest
   release and the index rows of earlier releases are dropped, so `integrated_filing_statements`
   always describes what is in the bucket. `raw/` keeps every release. A release extracted after a
