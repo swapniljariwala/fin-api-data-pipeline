@@ -201,4 +201,25 @@ filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        statement
   Until then, lookups of Nahar by ISIN miss its 4 newest filings (Mar-2026, Jun-2026). Related idea: when the feed
   has an unknown symbol, ingest could try to match the company name to an existing instrument before creating an
   ISIN-less one (renamed symbols are the usual cause).
+- **Next session: check the prod re-key and backfill, then decide the orphan cleanup** (state on 2026-11-08
+  20:07 IST; no subagent or monitor is running, the work runs by itself on the server).
+  Two detached scripts on `finapi` (app dir `/home/swapnil/apps/fin-api-data-pipeline`, logs in `logs/`):
+  `rebuild_integrated_filings.sh` (re-creates per-release objects from raw XML; 3,624 filings left, ETA about
+  22:00-23:00 IST) and `backfill_integrated_filings.sh` (9,421 done, 19,519 pending, 17 failed; ETA about
+  09:00-10:00 IST on 9 Nov). Both take turns on `/tmp/integrated_filings.lock`; logs: `logs/rebuild_integrated_filings.log`,
+  `logs/backfill_integrated_filings.log` (they end with "rebuild complete" / "backfill complete"). To stop either:
+  `touch logs/rebuild_integrated_filings.stop` / `touch logs/backfill_integrated_filings.stop` (exits after the batch).
+  When both are finished, verify (read-only) and report:
+  1. `select extraction_status,count(*) from integrated_filings group by 1` (expected failed: the 7 insurer-format, the
+     NSE 404 / empty files, nothing new) and rows with `extraction_error like 'rebuild failed%'` (expect 0).
+  2. Done filings with no statement row in the per-release layout: same condition as the `REMAIN` query in
+     `logs/rebuild_integrated_filings.sh` (expect 0).
+  3. Every `integrated_filing_statements.object_path` exists in the bucket: dump the paths from the DB first, then
+     `gcloud storage ls -r "gs://bhav-marketsetup-db-replication/filings/**"` and compare (expect 0 missing).
+  4. The "latest filing" query in this file returns one row per (instrument, period_end, consolidated).
+  5. Count (do not delete yet) old-layout orphan objects: `filings/SYMBOL/FYxxxx/Qn/basis/file.json` with no seq folder.
+  6. Watch for `database is locked` (36 log lines on 2026-11-08 with three writers); none of them failed a filing.
+  Then ask the user for **Question 2** in `QUESTIONS.md`: delete the orphan objects from an explicit list (7-day soft
+  delete is the safety net). Also update `docs/DEPLOYMENT.md` with the backfill / rebuild scripts, stop files and the
+  per-release layout, and copy any change of `FIN_API_HANDOFF.md` to `~/goapps/fin-api/INTEGRATED_FILINGS_HANDOFF.md`.
 
