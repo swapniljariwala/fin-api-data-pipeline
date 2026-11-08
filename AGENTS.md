@@ -368,12 +368,13 @@ python manage.py ingest_integrated_filings --symbol TCS --days 60
 python manage.py extract_integrated_filings [--bucket NAME | --local-dir PATH]
                                             [--limit N] [--seq-id N] [--symbol SYM]
                                             [--max-attempts N] [--delay SECONDS] [--timeout SECONDS]
+                                            [--rebuild]
 ```
 
 Takes `integrated_filings` rows that are `pending` (or `failed` with attempts left), downloads
 the XBRL, splits it into one JSON per statement (all periods inside), uploads to the bucket
 named by `$GCS_INTEGRATED_FILINGS_BUCKET` (or `--bucket`; `--local-dir` for testing) and records
-them in `integrated_filing_statements`. Bucket layout, status flow and revision handling are in
+them in `integrated_filing_statements`, one folder per release (`.../{basis}/{seq_id}/`). Bucket layout, status flow, the "latest release" query and `--rebuild` are in
 [`integratedfilings/AGENTS.md`](integratedfilings/AGENTS.md#extraction).
 
 ```bash

@@ -17,7 +17,8 @@ from securityinfo.models import Instrument
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 XML = (Path(__file__).parent / "testdata" / "denta_q2_fy27_standalone.xml").read_bytes()
 COMMAND = "integratedfilings.management.commands.extract_integrated_filings"
-BASE = "filings/DENTA/FY2027/Q2/standalone"
+GROUP = "filings/DENTA/FY2027/Q2/standalone"
+BASE = f"{GROUP}/211600"  # the folder of release 211600
 
 
 class FyQuarterTests(SimpleTestCase):
@@ -181,7 +182,7 @@ class ExtractCommandTests(TestCase):
         bad.refresh_from_db(); good.refresh_from_db()
         self.assertEqual(bad.extraction_status, "failed")
         self.assertEqual(good.extraction_status, "done")
-        self.assertTrue((self.root / "filings/DENTA/FY2027/Q2/consolidated/_manifest.json").exists())
+        self.assertTrue((self.root / "filings/DENTA/FY2027/Q2/consolidated/2/_manifest.json").exists())
 
     def test_governance_and_basisless_filings_are_ignored(self):
         make_filing(self.inst, 1, filing_type="Integrated Filing- Governance", consolidated=None)
@@ -189,36 +190,105 @@ class ExtractCommandTests(TestCase):
         session = self._run()
         session.get.assert_not_called()
 
-    def test_revision_replaces_index_rows_of_the_earlier_release(self):
+    def test_revision_keeps_the_original_next_to_it(self):
         original = make_filing(self.inst, 211600)
         self._run()
+        before = (self.root / GROUP / "211600" / "profit_and_loss.json").read_bytes()
         revision = make_filing(self.inst, 211700, hours=48, type_sub="Revision")
         self._run()
-        self.assertFalse(original.statements.exists())
+        # both releases keep their own rows and their own folder; nothing is overwritten
+        self.assertTrue(original.statements.exists())
         self.assertTrue(revision.statements.exists())
-        # both raw releases are kept; one set of statement objects
+        self.assertEqual((self.root / GROUP / "211600" / "profit_and_loss.json").read_bytes(), before)
+        self.assertTrue((self.root / GROUP / "211700" / "profit_and_loss.json").exists())
+        self.assertEqual(sorted(p.name for p in (self.root / GROUP).iterdir()), ["211600", "211700"])
+        self.assertEqual(
+            self._json(f"{GROUP}/211700/profit_and_loss.json")["source"]["seq_id"], 211700)
         raws = sorted(p.name for p in (self.root / "raw/DENTA/FY2027/Q2/standalone").iterdir())
         self.assertEqual(raws, ["211600.xml", "211700.xml"])
 
-    def test_older_release_extracted_late_does_not_overwrite_newer(self):
+    def test_older_release_extracted_late_gets_its_own_folder(self):
         make_filing(self.inst, 211600)  # original, still pending
         revision = make_filing(self.inst, 211700, hours=48, type_sub="Revision")
         self._run(seq_id=211700)
-        before = (self.root / BASE / "profit_and_loss.json").read_bytes()
+        before = (self.root / GROUP / "211700" / "profit_and_loss.json").read_bytes()
 
-        self._run()  # now the original is processed
+        self._run()  # now the original is processed (it used to be 'raw only, superseded')
         original = IntegratedFiling.objects.get(seq_id=211600)
         self.assertEqual(original.extraction_status, "done")
-        self.assertIn("superseded by seq_id 211700", original.extraction_error)
-        self.assertFalse(original.statements.exists())
+        self.assertEqual(original.extraction_error, "")
+        self.assertTrue(original.statements.exists())
         self.assertTrue(revision.statements.exists())
-        self.assertEqual((self.root / BASE / "profit_and_loss.json").read_bytes(), before)
-        self.assertTrue((self.root / "raw/DENTA/FY2027/Q2/standalone/211600.xml").exists())
+        self.assertEqual((self.root / GROUP / "211700" / "profit_and_loss.json").read_bytes(), before)
+        self.assertTrue((self.root / GROUP / "211600" / "profit_and_loss.json").exists())
+
+    def test_tied_broadcast_time_cannot_lose_data(self):
+        a = make_filing(self.inst, 211600)
+        b = make_filing(self.inst, 211601, type_sub="Revision")  # same second as `a`
+        self._run()
+        for f in (a, b):
+            self.assertTrue(f.statements.exists())
+        self.assertTrue((self.root / GROUP / "211600" / "profit_and_loss.json").exists())
+        self.assertTrue((self.root / GROUP / "211601" / "profit_and_loss.json").exists())
+
+    # ---------------------------------------------------------------- rebuild
+
+    def _legacy_done(self, seq_id, with_rows, **kw):
+        """A filing extracted by the old code: raw XML in the bucket, shared-folder statement
+        rows (or none, for a release that was stored raw-only)."""
+        f = make_filing(self.inst, seq_id, extraction_status="done", extraction_attempts=1,
+                        extraction_error="" if with_rows else f"superseded by seq_id {seq_id+1}: raw XML stored only",
+                        **kw)
+        raw = self.root / f"raw/DENTA/FY2027/Q2/standalone/{seq_id}.xml"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_bytes(XML)
+        if with_rows:
+            IntegratedFilingStatement.objects.create(
+                filing=f, statement="profit_and_loss", role_code="100200",
+                object_path=f"{GROUP}/profit_and_loss.json")  # old shared-folder path
+        return f
+
+    def test_rebuild_recreates_objects_from_stored_raw_without_nse_access(self):
+        with_rows = self._legacy_done(211600, True)
+        raw_only = self._legacy_done(211601, False, type_sub="Revision")
+        session = self._run(rebuild=True)
+        session.get.assert_not_called()  # NSE is not contacted
+        for f in (with_rows, raw_only):
+            f.refresh_from_db()
+            self.assertEqual((f.extraction_status, f.extraction_attempts), ("done", 1))
+            self.assertEqual(f.extraction_error, "")
+            paths = list(f.statements.values_list("object_path", flat=True))
+            self.assertGreater(len(paths), 5)
+            self.assertTrue(all(f"/{f.seq_id}/" in p and (self.root / p).exists() for p in paths))
+            self.assertTrue((self.root / GROUP / str(f.seq_id) / "_manifest.json").exists())
+        # old shared-folder row is gone; running again finds nothing to do
+        self.assertFalse(IntegratedFilingStatement.objects.filter(
+            object_path=f"{GROUP}/profit_and_loss.json").exists())
+        again = self._run(rebuild=True)
+        again.get.assert_not_called()
+
+    def test_rebuild_leaves_pending_and_already_rebuilt_filings_alone(self):
+        pending = make_filing(self.inst, 1, consolidated=True)
+        self._legacy_done(211600, True)
+        self._run(rebuild=True)
+        pending.refresh_from_db()
+        self.assertEqual(pending.extraction_status, "pending")
+        self.assertFalse((self.root / "filings/DENTA/FY2027/Q2/consolidated").exists())
+
+    def test_rebuild_failure_keeps_done_and_is_not_retried_forever(self):
+        f = make_filing(self.inst, 211600, extraction_status="done", extraction_attempts=1)
+        # no raw XML in the bucket
+        with self.assertRaises(CommandError):
+            self._run(rebuild=True)
+        f.refresh_from_db()
+        self.assertEqual((f.extraction_status, f.extraction_attempts), ("done", 1))
+        self.assertTrue(f.extraction_error.startswith("rebuild failed"))
+        self._run(rebuild=True)  # not selected again, no error
 
     def test_symbol_with_special_characters_is_path_safe(self):
         make_filing(self.inst, 5, raw={"symbol": "M&M"})
         self._run()
-        self.assertTrue((self.root / "filings/M%26M/FY2027/Q2/standalone/_manifest.json").exists())
+        self.assertTrue((self.root / "filings/M%26M/FY2027/Q2/standalone/5/_manifest.json").exists())
 
     def test_no_destination_is_an_error(self):
         make_filing(self.inst, 211600)

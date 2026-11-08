@@ -58,32 +58,51 @@ Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS` key file, or t
 service account).
 
 Bucket layout (`fy` = `FY2027` for Apr 2026 - Mar 2027, `quarter` Q1..Q4, `basis` =
-`standalone`|`consolidated`; symbols are URL-quoted, `M&M` -> `M%26M`):
+`standalone`|`consolidated`; symbols are URL-quoted, `M&M` -> `M%26M`). **Every release
+(Original or Revision) has its own `seq_id` folder; nothing is overwritten:**
 
 ```
-raw/{symbol}/{fy}/{quarter}/{basis}/{seq_id}.xml           every release, kept as filed
-filings/{symbol}/{fy}/{quarter}/{basis}/{statement}.json   one per statement, all periods inside
-filings/{symbol}/{fy}/{quarter}/{basis}/canonical.json     ~12 headline numbers
-filings/{symbol}/{fy}/{quarter}/{basis}/_manifest.json     statements present (written last)
+raw/{symbol}/{fy}/{quarter}/{basis}/{seq_id}.xml                       original XML, as filed
+filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/{statement}.json      one per statement, all periods inside
+filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/canonical.json        ~12 headline numbers
+filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        statements present (written last)
 ```
 
 - A statement object has `company`, `report`, `units`, `source` (seq_id, type, URL), `statement`,
   `role_code` and `entries`: one entry per period (P&L of a Q2 filing has Q2 and H1; Q4 has Q4 and
   FY; a balance sheet has an `as_of` date). Statement names come from `jugaad-xbrl`.
 - **Status flow**: `pending` -> `done`, or `failed` (+1 attempt, error saved). `pending` and
-  `failed` with attempts left are picked up newest-broadcast first (fresh filings are never stuck behind a backfill), `--limit` per run. After
-  `--max-attempts` (3) a filing is left `failed`; `--seq-id N` re-runs one regardless. A crash
-  leaves a filing `pending`; the re-run overwrites, so it is safe. The command carries on past a
-  failed filing and exits 1 at the end. **HTTP 403/429 from NSE stops the run at once** (the filing stays `pending`, no attempt counted). Downloads are `--delay` (1.0 s) apart. Governance filings and rows without a URL are not processed.
-- **Revisions**: same symbol/quarter/basis -> the `filings/` objects are overwritten by the latest
-  release and the index rows of earlier releases are dropped, so `integrated_filing_statements`
-  always describes what is in the bucket. `raw/` keeps every release. A release extracted after a
-  newer one is already done only stores its raw XML (`extraction_error` says so). Turn on bucket
-  object versioning if you want history of the parsed objects.
-- `fy`/`quarter` come from NSE's quarter-end date, not the filing's header facts (a filer can
-  mis-write those; `jugaad-xbrl` 0.4.0 `canonical()` is empty for such a file, `to_dict` is fine).
-- Sizes: P&L ~6 KB, balance sheet ~3 KB, cash flow ~7 KB, but `related_party_transactions` has a
-  median of ~280 KB and reaches 2.3 MB. Readers should page that one.
+  `failed` with attempts left are picked up newest-broadcast first (fresh filings are never stuck
+  behind a backfill), `--limit` per run. After `--max-attempts` (3) a filing is left `failed`;
+  `--seq-id N` re-runs one regardless. A crash leaves a filing `pending`; the re-run overwrites its
+  own folder, so it is safe. The command carries on past a failed filing and exits 1 at the end.
+  **HTTP 403/429 from NSE stops the run at once** (the filing stays `pending`, no attempt counted).
+  Downloads are `--delay` (1.0 s) apart.
+- **Releases**: each release has its own statement rows in `integrated_filing_statements` and its own
+  folder, so an Original and its Revisions all stay readable. **Latest** is a query, not an overwrite:
+  the newest `done` release with statements, by `broadcast_at` then `seq_id`:
+  ```sql
+  select f.* from integrated_filings f
+  where f.extraction_status='done' and exists (select 1 from integrated_filing_statements s where s.filing_id=f.id)
+    and not exists (select 1 from integrated_filings g
+        where g.instrument_id=f.instrument_id and g.period_end=f.period_end and g.consolidated=f.consolidated
+          and g.filing_type=f.filing_type and g.extraction_status='done'
+          and exists (select 1 from integrated_filing_statements s2 where s2.filing_id=g.id)
+          and (g.broadcast_at>f.broadcast_at or (g.broadcast_at=f.broadcast_at and g.seq_id>f.seq_id)));
+  ```
+  A newer release that failed (e.g. NSE 404) is skipped, so "latest" is the newest one that has data.
+  Always use `object_path` from the table; never rebuild a path from the current symbol.
+- **`--rebuild`**: re-creates the parsed objects of `done` filings that have none in this layout
+  (older runs shared one folder per quarter, or kept only the raw XML of a superseded release).
+  It reads the raw XML from the bucket (NSE is not contacted, no attempt counted). A filing that
+  fails keeps `done` with `extraction_error = "rebuild failed: ..."`. The old shared-folder
+  objects are left in place (orphans) until someone deletes them.
+- `fy`/`quarter` come from NSE's quarter-end date with the Indian April-March convention, not
+  from the filing (a filer can mis-write the header, and companies with a calendar or Jul-Jun
+  year have a different own fiscal quarter: balance sheet and cash flow follow the company's own
+  half-years). `jugaad-xbrl` 0.4.0 `canonical()` is empty for a file with a mis-written period.
+- Sizes: P&L ~6 KB, balance sheet ~3 KB, cash flow ~7 KB, `related_party_transactions` has a
+  median of ~90 KB (max 2.8 MB on prod). Readers should page that one.
 
 ## Things worth knowing
 

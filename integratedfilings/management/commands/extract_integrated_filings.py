@@ -2,22 +2,31 @@
 
 Works through ``integrated_filings`` rows whose ``extraction_status`` is
 ``pending`` (or ``failed`` with attempts left), **newest broadcast first** (so fresh
-filings are never stuck behind a backfill). For each
-filing it:
+filings are never stuck behind a backfill). For each filing it:
 
 1. downloads the XBRL XML from NSE,
 2. parses it with ``jugaad-xbrl`` and splits it into one JSON object per
    statement (all periods of a statement inside the one object),
 3. uploads the raw XML, every statement, ``canonical.json`` and finally
-   ``_manifest.json`` (last, so a manifest means the set is complete),
+   ``_manifest.json`` (last, so a manifest means the set is complete) into a
+   folder of its own, ``.../{basis}/{seq_id}/``,
 4. records the statements in ``integrated_filing_statements`` and marks the
    filing ``done``.
+
+Every release (Original or Revision) keeps its own folder and its own statement
+rows, so nothing is overwritten; "latest" is decided by a query (see AGENTS.md).
 
 If NSE answers HTTP 403/429 the run stops at once (filing stays ``pending``, no attempt
 counted). A filing that fails otherwise is marked ``failed`` with the error and an attempt counted;
 it is retried by later runs until ``--max-attempts``. A crash mid-filing leaves
 it ``pending`` and the next run redoes it (uploads overwrite, so that is safe).
 The run continues past a failed filing and exits non-zero at the end.
+
+``--rebuild`` re-creates the parsed objects of filings that are already ``done`` but have
+no objects in the per-release layout (older runs wrote one shared folder per quarter, or
+stored only the raw XML for a superseded release). It reads the raw XML from the bucket, so
+NSE is not contacted and no attempt is counted. A filing that fails to rebuild keeps
+``done`` and gets ``extraction_error = "rebuild failed: ..."`` so it is not retried forever.
 
 Destination: ``--local-dir`` (testing), else the bucket named by ``--bucket`` or
 the ``GCS_INTEGRATED_FILINGS_BUCKET`` environment variable (Google Application
@@ -30,9 +39,11 @@ import time
 import requests
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import CharField, Exists, OuterRef, Value
+from django.db.models.functions import Cast, Concat
 from django.utils import timezone
 
-from integratedfilings.extraction import ExtractionError, extract
+from integratedfilings.extraction import ExtractionError, extract, raw_path_for
 from integratedfilings.models import IntegratedFiling, IntegratedFilingStatement
 from integratedfilings.storage import StorageError, get_storage
 
@@ -41,6 +52,7 @@ logger = logging.getLogger(__name__)
 FINANCIALS = "Integrated Filing- Financials"
 BLOCKED = object()  # _process result: NSE refused the download (HTTP 403/429)
 BLOCK_STATUSES = (403, 429)
+REBUILD_FAILED = "rebuild failed"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -65,6 +77,9 @@ class Command(BaseCommand):
                             help="seconds between downloads (default: 1.0, 0 disables)")
         parser.add_argument("--timeout", type=float, default=60,
                             help="download timeout in seconds (default: 60)")
+        parser.add_argument("--rebuild", action="store_true",
+                            help="re-create parsed objects of done filings from the raw XML "
+                                 "already in the bucket (no NSE access)")
 
     def handle(self, *args, **options):
         if options["limit"] <= 0 or options["max_attempts"] <= 0:
@@ -74,19 +89,21 @@ class Command(BaseCommand):
         except StorageError as exc:
             raise CommandError(str(exc))
 
+        rebuild = options["rebuild"]
         todo = self._select(options)
-        logger.info("Integrated filings extraction started (%d filing(s), dest=%s)",
-                    len(todo), storage)
+        logger.info("Integrated filings %s started (%d filing(s), dest=%s)",
+                    "rebuild" if rebuild else "extraction", len(todo), storage)
         started = time.monotonic()
         done = failed = 0
         blocked = False
+        delay = 0 if rebuild else options["delay"]  # rebuild reads our own bucket
         try:
             session = requests.Session()
             session.headers["User-Agent"] = USER_AGENT
             for i, filing in enumerate(todo):
-                if i and options["delay"]:
-                    time.sleep(options["delay"])
-                outcome = self._process(filing, storage, session, options["timeout"])
+                if i and delay:
+                    time.sleep(delay)
+                outcome = self._process(filing, storage, session, options["timeout"], rebuild)
                 if outcome is BLOCKED:
                     blocked = True
                     break
@@ -95,7 +112,8 @@ class Command(BaseCommand):
                 else:
                     failed += 1
         finally:
-            logger.info("Integrated filings extraction finished in %.1fs: %d done, %d failed%s",
+            logger.info("Integrated filings %s finished in %.1fs: %d done, %d failed%s",
+                        "rebuild" if rebuild else "extraction",
                         time.monotonic() - started, done, failed,
                         ", STOPPED: NSE refused a download" if blocked else "")
         if blocked:
@@ -115,6 +133,19 @@ class Command(BaseCommand):
             qs = qs.filter(raw__symbol=options["symbol"])
         if options["seq_id"]:
             return list(qs.filter(seq_id=options["seq_id"]))
+        if options["rebuild"]:
+            in_new_layout = IntegratedFilingStatement.objects.filter(
+                filing=OuterRef("pk"),
+                object_path__contains=Concat(
+                    Value("/"), Cast(OuterRef("seq_id"), CharField()), Value("/")
+                ),
+            )
+            qs = (
+                qs.filter(extraction_status=IntegratedFiling.ExtractionStatus.DONE)
+                .exclude(extraction_error__startswith=REBUILD_FAILED)
+                .exclude(Exists(in_new_layout))
+            )
+            return list(qs.order_by("-broadcast_at")[: options["limit"]])
         qs = qs.filter(
             extraction_status__in=[
                 IntegratedFiling.ExtractionStatus.PENDING,
@@ -126,23 +157,24 @@ class Command(BaseCommand):
 
     # ---------------------------------------------------------------- process
 
-    def _process(self, filing, storage, session, timeout):
+    def _process(self, filing, storage, session, timeout, rebuild=False):
         """Extract one filing. Returns True on success, False on failure."""
         try:
-            xml = self._download(session, filing.xbrl_url, timeout)
-            result = extract(filing, xml)
-            newer = self._newer_done_sibling(filing)
-
-            storage.put(result.raw_path, xml, "application/xml")
-            if newer is None:
-                for s in result.statements:
-                    storage.put(s.path, s.data)
-                storage.put(result.canonical_path, result.canonical_data)
-                storage.put(result.manifest_path, result.manifest_data)  # last
-            self._record(filing, result, newer)
+            if rebuild:
+                xml = storage.get(raw_path_for(filing))
+                result = extract(filing, xml)
+            else:
+                xml = self._download(session, filing.xbrl_url, timeout)
+                result = extract(filing, xml)
+                storage.put(result.raw_path, xml, "application/xml")
+            for s in result.statements:
+                storage.put(s.path, s.data)
+            storage.put(result.canonical_path, result.canonical_data)
+            storage.put(result.manifest_path, result.manifest_data)  # last
+            self._record(filing, result, rebuild)
         except Exception as exc:  # one bad filing must not stop the run
             response = getattr(exc, "response", None)
-            if isinstance(exc, requests.HTTPError) and getattr(
+            if not rebuild and isinstance(exc, requests.HTTPError) and getattr(
                 response, "status_code", None
             ) in BLOCK_STATUSES:
                 # we are being throttled or blocked: do not hammer on, and do not
@@ -155,15 +187,21 @@ class Command(BaseCommand):
                                (filing.raw or {}).get("symbol"), exc)
             else:
                 logger.exception("seq_id %s failed unexpectedly", filing.seq_id)
-            IntegratedFiling.objects.filter(pk=filing.pk).update(
-                extraction_status=IntegratedFiling.ExtractionStatus.FAILED,
-                extraction_attempts=filing.extraction_attempts + 1,
-                extraction_error=f"{type(exc).__name__}: {exc}"[:2000],
-            )
+            if rebuild:
+                # stays done; the note keeps it out of the next rebuild batch
+                IntegratedFiling.objects.filter(pk=filing.pk).update(
+                    extraction_error=f"{REBUILD_FAILED}: {type(exc).__name__}: {exc}"[:2000]
+                )
+            else:
+                IntegratedFiling.objects.filter(pk=filing.pk).update(
+                    extraction_status=IntegratedFiling.ExtractionStatus.FAILED,
+                    extraction_attempts=filing.extraction_attempts + 1,
+                    extraction_error=f"{type(exc).__name__}: {exc}"[:2000],
+                )
             return False
-        logger.info("seq_id %s (%s %s): %s", filing.seq_id, (filing.raw or {}).get("symbol"),
-                    filing.period_end, f"{len(result.statements)} statement(s) uploaded"
-                    if newer is None else f"raw only, superseded by seq_id {newer.seq_id}")
+        logger.info("seq_id %s (%s %s): %d statement(s) %s", filing.seq_id,
+                    (filing.raw or {}).get("symbol"), filing.period_end,
+                    len(result.statements), "rebuilt" if rebuild else "uploaded")
         return True
 
     @staticmethod
@@ -176,53 +214,27 @@ class Command(BaseCommand):
         return body
 
     @staticmethod
-    def _newer_done_sibling(filing):
-        """A later, already-extracted release of the same symbol/quarter/basis, if any."""
-        return (
-            IntegratedFiling.objects.filter(
-                instrument=filing.instrument,
-                period_end=filing.period_end,
-                consolidated=filing.consolidated,
-                filing_type=filing.filing_type,
-                extraction_status=IntegratedFiling.ExtractionStatus.DONE,
-                broadcast_at__gt=filing.broadcast_at,
-            )
-            .order_by("-broadcast_at")
-            .first()
-        )
-
-    @staticmethod
-    def _record(filing, result, newer):
+    def _record(filing, result, rebuild=False):
         with transaction.atomic():
-            if newer is None:
-                # the bucket objects now hold this release: drop index rows of
-                # earlier releases of the same symbol/quarter/basis
-                IntegratedFilingStatement.objects.filter(
-                    filing__instrument=filing.instrument,
-                    filing__period_end=filing.period_end,
-                    filing__consolidated=filing.consolidated,
-                    filing__filing_type=filing.filing_type,
-                ).delete()
-                IntegratedFilingStatement.objects.bulk_create(
-                    IntegratedFilingStatement(
-                        filing=filing,
-                        statement=s.statement,
-                        role_code=s.role_code,
-                        description=s.description,
-                        periods=s.periods,
-                        item_count=s.item_count,
-                        row_count=s.row_count,
-                        object_path=s.path,
-                        size_bytes=len(s.data),
-                    )
-                    for s in result.statements
+            # only this release's own rows: other releases keep theirs
+            filing.statements.all().delete()
+            IntegratedFilingStatement.objects.bulk_create(
+                IntegratedFilingStatement(
+                    filing=filing,
+                    statement=s.statement,
+                    role_code=s.role_code,
+                    description=s.description,
+                    periods=s.periods,
+                    item_count=s.item_count,
+                    row_count=s.row_count,
+                    object_path=s.path,
+                    size_bytes=len(s.data),
                 )
-                note = "; ".join(result.warnings)
-            else:
-                note = f"superseded by seq_id {newer.seq_id}: raw XML stored only"
+                for s in result.statements
+            )
             IntegratedFiling.objects.filter(pk=filing.pk).update(
                 extraction_status=IntegratedFiling.ExtractionStatus.DONE,
-                extraction_attempts=filing.extraction_attempts + 1,
-                extraction_error=note[:2000],
+                extraction_attempts=filing.extraction_attempts + (0 if rebuild else 1),
+                extraction_error="; ".join(result.warnings)[:2000],
                 extracted_at=timezone.now(),
             )

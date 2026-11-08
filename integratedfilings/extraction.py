@@ -2,17 +2,19 @@
 
 Pure functions: XML bytes in, named objects out. No network, no database.
 
-Layout (``{basis}`` is ``standalone`` or ``consolidated``)::
+Layout (``{basis}`` is ``standalone`` or ``consolidated``; every release - an
+Original or a Revision - has its own ``seq_id`` folder, so nothing is overwritten)::
 
-    raw/{symbol}/{fy}/{quarter}/{basis}/{seq_id}.xml           original XML, per release
-    filings/{symbol}/{fy}/{quarter}/{basis}/{statement}.json   one per statement, all periods inside
-    filings/{symbol}/{fy}/{quarter}/{basis}/canonical.json     ~12 headline numbers
-    filings/{symbol}/{fy}/{quarter}/{basis}/_manifest.json     which statements this filing has
+    raw/{symbol}/{fy}/{quarter}/{basis}/{seq_id}.xml                       original XML
+    filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/{statement}.json      one per statement, all periods inside
+    filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/canonical.json        ~12 headline numbers
+    filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        which statements this release has
 
 ``fy`` is ``FY2027`` for April 2026 - March 2027; ``quarter`` is Q1 (Apr-Jun) to
 Q4 (Jan-Mar). Both are derived from NSE's quarter-end date, not from the filer's
-header facts (some filers mis-write those). A revision of the same
-symbol/quarter/basis overwrites the ``filings/`` objects; ``raw/`` keeps every release.
+header facts (some filers mis-write those). "Latest release" of a symbol/quarter/basis
+is a query over ``integrated_filings`` (newest ``done`` release by
+``broadcast_at``, then ``seq_id``), not an overwrite.
 """
 
 import json
@@ -65,7 +67,7 @@ class StatementObject:
 
 @dataclass
 class Extracted:
-    base: str  # filings/{symbol}/{fy}/{quarter}/{basis}
+    base: str  # filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}
     raw_path: str
     statements: list = field(default_factory=list)  # list[StatementObject]
     canonical_path: str = ""
@@ -87,15 +89,19 @@ def object_base(filing):
     return quote(symbol, safe=""), fy, quarter, basis
 
 
+def raw_path_for(filing):
+    """Bucket path of the original XML of this release."""
+    symbol, fy, quarter, basis = object_base(filing)
+    return f"raw/{symbol}/{fy}/{quarter}/{basis}/{filing.seq_id}.xml"
+
+
 def extract(filing, xml_bytes):
     """Parse ``xml_bytes`` (the XBRL of ``filing``) into bucket objects."""
     from jugaad_xbrl import parse
 
     symbol, fy, quarter, basis = object_base(filing)
-    base = f"filings/{symbol}/{fy}/{quarter}/{basis}"
-    out = Extracted(
-        base=base, raw_path=f"raw/{symbol}/{fy}/{quarter}/{basis}/{filing.seq_id}.xml"
-    )
+    base = f"filings/{symbol}/{fy}/{quarter}/{basis}/{filing.seq_id}"  # one folder per release
+    out = Extracted(base=base, raw_path=raw_path_for(filing))
 
     try:
         parsed = parse(xml_bytes)
