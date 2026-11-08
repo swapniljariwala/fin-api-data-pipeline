@@ -139,4 +139,15 @@ filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        statement
   (one per `other_than_bank` filing; no NSE access). Scope: only `canonical.json` of that format.
   It does not cover banks / insurers (they file no single equity line, so `total_equity` stays null by
   design) or the HDFC Life Dec-2025 file whose reporting period the filer mis-wrote.
+- **`jugaad-xbrl`: support the new insurer Ind AS taxonomy** (`format = insurance_indas`, header
+  `IFInsuranceIndAs V1.0 (30-09-2026)`, schema `in-capmkt-ent-2026-08-31`; file names `IF_INS_COM_IND_AS_*`).
+  `jugaad-xbrl` 0.4.0 raises `cannot identify the filing format`; the unreleased 0.4.1 identifies the format
+  and reads the header and facts but has no statement layout yet (`sections()` is empty, `canonical()` raises
+  `NotImplementedError`). Until the library supports it these filings stay `failed` (3 attempts used). Known
+  on 2026-11-08: GODIGIT seq 210652, NIVABUPA seq 209588, STARHEALTH seq 205171-205174 (Sep-2026) and 202542
+  (Jun-2026); expect more insurers on this taxonomy. After the library release: bump the pin in
+  `requirements.txt`, deploy, then re-run the failed ones with `extract_integrated_filings --max-attempts 6`
+  (their attempt count is 3, so they are picked up again; downloads from NSE, 1 s apart).
+  *Decision (2026-11-08):* no raw-XML-only fallback for now, wait for the library. If the library is slow, the
+  option is to mark such filings `done` with a note "no taxonomy: raw XML only" so they stop counting as failures.
 
