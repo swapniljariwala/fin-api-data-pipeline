@@ -27,11 +27,11 @@ Status: `[ ]` open, `[x]` answered.
    /home/swapnil/service-account.json` (currently readable by all users)? (c) put
    `ingest_corporate_actions` on cron (it is not scheduled; DEPLOYMENT.md has a suggested entry)?
    Answer: Yes to all three, done 2026-11-08: weekly `cron.log` rotation, key `chmod 600`, corporate actions on cron at 09:12 IST (see `docs/DEPLOYMENT.md`).
-6. [ ] **Filings NSE does not serve.** 8 are HTTP 404 and 1 is an empty file on NSE's archive. Leave as
+6. [x] **Filings NSE does not serve.** 8 are HTTP 404 and 1 is an empty file on NSE's archive. Leave as
    `failed`, or retry them automatically after some days in case NSE republishes?
-   Answer:
+   Answer: B: weekly automatic retry (`extract_integrated_filings --retry-missing`, Sun 11:12 IST) of 404 / empty-file failures only (2026-11-08).
 7. [ ] **ISIN-less instrument.** NAHARENTP (4 filings) has no ISIN in our instrument master. Leave it
    (it fixes itself when the master gets the ISIN) or fix now?
    Answer:
-8. [ ] **Push.** Push the unpushed docs commits to `origin/main`?
-   Answer:
+8. [x] **Push.** Push the unpushed docs commits to `origin/main`?
+   Answer: Pushed on 2026-11-08 together with the `--retry-missing` deploy (a deploy needs everything on `origin/main`).

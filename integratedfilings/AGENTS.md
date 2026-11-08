@@ -50,6 +50,7 @@ python manage.py ingest_integrated_filings [--latest | --from YYYY-MM-DD | --day
 python manage.py extract_integrated_filings [--bucket NAME | --local-dir PATH]
                                             [--limit N] [--seq-id N] [--symbol SYM]
                                             [--max-attempts N] [--delay SECONDS] [--timeout SECONDS]
+                                            [--retry-missing] [--rebuild]
 ```
 
 Destination: `--local-dir` (testing), else `--bucket`, else the environment variable
@@ -92,6 +93,10 @@ filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        statement
   ```
   A newer release that failed (e.g. NSE 404) is skipped, so "latest" is the newest one that has data.
   Always use `object_path` from the table; never rebuild a path from the current symbol.
+- **`--retry-missing`** (weekly cron, Sun 11:12 IST): re-tries `failed` filings whose error is on NSE's
+  side (HTTP 404, or an empty / non-XML download), whatever their attempt count, once per run, in case NSE
+  republishes the file. Other failures (e.g. the unsupported insurer taxonomy) are left alone. A retry that
+  fails again stays `failed` (attempts +1) and is picked up again next week.
 - **`--rebuild`**: re-creates the parsed objects of `done` filings that have none in this layout
   (older runs shared one folder per quarter, or kept only the raw XML of a superseded release).
   It reads the raw XML from the bucket (NSE is not contacted, no attempt counted). A filing that

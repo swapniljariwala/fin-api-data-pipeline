@@ -130,6 +130,8 @@ CRON_TZ=Asia/Kolkata
 # skipping the Litestream snapshot window (05:30-05:45). One lock so list and extraction never overlap.
 12,27,42,57 0-4,6-23 * * * flock -n /tmp/integrated_filings.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_integrated_filings --latest --lookback 3 >> logs/cron.log 2>&1; env/bin/python manage.py extract_integrated_filings >> logs/cron.log 2>&1"
 12,27,57 5 * * * flock -n /tmp/integrated_filings.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_integrated_filings --latest --lookback 3 >> logs/cron.log 2>&1; env/bin/python manage.py extract_integrated_filings >> logs/cron.log 2>&1"
+# Integrated filings: weekly re-try of filings NSE did not serve (404 / empty file); waits for the lock instead of skipping
+12 11 * * 0 flock -w 1800 /tmp/integrated_filings.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py extract_integrated_filings --retry-missing >> logs/cron.log 2>&1"
 # Corporate actions: live NSE feed by ex-date, daily after the bhavcopy window so ex-date price checks see fresh closes
 12 9 * * * flock -n /tmp/ingest_corporate_actions.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_actions --latest >> logs/cron.log 2>&1"
 # Rotate logs/cron.log weekly (Sun 03:30 IST): rename, wait for in-flight appends, gzip, drop archives older than 28 days
@@ -151,6 +153,7 @@ responsive. Run migrations and other heavy DB work outside 05:30–05:45.
 | Mutual fund NAV | `ingest_mf_nav --latest --lookback 5` (daily 09:30 IST) | `mutual_fund_nav_history` |
 | Integrated filings (list) | `ingest_integrated_filings --latest --lookback 3` (every 15 min, :12/:27/:42/:57, see [Integrated filings](#integrated-filings)) | `integrated_filings` |
 | Integrated filings (extraction) | `extract_integrated_filings` (same job, right after the list ingest) | `integrated_filing_statements`, GCS bucket |
+| Integrated filings (weekly retry) | `extract_integrated_filings --retry-missing` (Sun 11:12 IST): re-tries filings NSE did not serve | `integrated_filings`, GCS bucket |
 | Corporate actions | `ingest_corporate_actions --latest` (daily 09:12 IST, scheduled 2026-11-08, see [Corporate actions](#corporate-actions)) | `corporate_actions`, `corporate_action_legs` |
 
 Notes:
