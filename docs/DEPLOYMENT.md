@@ -68,7 +68,7 @@ Observed versions (prod):
 | Python | 3.14.4 |
 | Django | 6.1.1 |
 | jugaad-data | 0.37.0 |
-| jugaad-xbrl | 0.4.0 |
+| jugaad-xbrl | 0.5.0 |
 | google-cloud-storage | 3.17.1 |
 | python-dotenv | 1.2.3 |
 
