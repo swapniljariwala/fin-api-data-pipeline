@@ -112,7 +112,10 @@ delivery goes last because it needs that date's CM bhavcopy already ingested.
 The corporate-announcements feed is **live** and can update at any second, so
 it is polled **every minute**. The mutual-fund NAV report for a session is
 published by AMFI the same evening, so it is fetched **once daily** at 09:30
-IST, after the bhavcopy window. Every job is wrapped in `flock` and appends to
+IST, after the bhavcopy window. Stock industry classification runs daily at
+**16:00 IST**, after market close; NSE publishes the day's bhavcopy later in the
+evening, so this run uses the previous session's file (new listings are picked
+up the next day). Every job is wrapped in `flock` and appends to
 `logs/cron.log` (changed 2026-11-07; previously the bhavcopy jobs ran bare and
 all fired on the same minute):
 
@@ -122,6 +125,8 @@ CRON_TZ=Asia/Kolkata
 3,18,33,48 4-8 * * * flock -n /tmp/ingest_index_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_index_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
 6,21,36,51 4-8 * * * flock -n /tmp/ingest_fno_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_fno_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
 9,24,39,54 4-8 * * * flock -n /tmp/ingest_delivery_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_delivery_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
+# Stock industry classification: after market close; uses the latest published UDiFF bhavcopy (previous session)
+0 16 * * * flock -n /tmp/ingest_stock_classification.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_stock_classification >> logs/cron.log 2>&1"
 # Corporate announcements: live feed, poll every minute (lookback 1 = today only)
 * * * * * flock -n /tmp/ingest_corporate_announcements.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_announcements --latest --lookback 1 >> logs/cron.log 2>&1"
 # Mutual fund NAV: AMFI publishes the session's report the same evening; run after the bhavcopy window
@@ -149,6 +154,7 @@ responsive. Run migrations and other heavy DB work outside 05:30–05:45.
 | CM delivery data | `ingest_delivery_bhavcopy --latest --lookback 5` (:09/:24/:39/:54, after `ingest_bhavcopy`, see [Delivery data](#delivery-data)) | `nse_cm_delivery` |
 | F&O daily prices | `ingest_fno_bhavcopy --latest --lookback 5` | `fno_price_history` |
 | Index prices | `ingest_index_bhavcopy --latest --lookback 5` | `index_price_history` |
+| Stock industry classification | `ingest_stock_classification` (daily 16:00 IST, after market close, see [Stock industry classification](#stock-industry-classification)) | `instrument_classification` |
 | Corporate announcements | `ingest_corporate_announcements --latest --lookback 1` (every minute) | `corporate_announcements` |
 | Mutual fund NAV | `ingest_mf_nav --latest --lookback 5` (daily 09:30 IST) | `mutual_fund_nav_history` |
 | Integrated filings (list) | `ingest_integrated_filings --latest --lookback 3` (every 15 min, :12/:27/:42/:57, see [Integrated filings](#integrated-filings)) | `integrated_filings` |
@@ -367,6 +373,23 @@ sqlite3 db/db.sqlite3 \
 ```
 
 
+### Stock industry classification
+
+`instrument_classification` is filled from the NSE live quote's `secInfo`
+(`macro`/`sector`/`industryInfo`/`basicIndustry`); NSE publishes no bulk file.
+`ingest_stock_classification` takes the ISIN/symbol/series triples from a recent
+UDiFF CM bhavcopy and calls `stock_quote` only for instruments without a row,
+`--delay` 3 s apart. It runs daily at **16:00 IST**, after market close. NSE
+publishes a session's bhavcopy later in the evening (~18:00), so the 16:00 run
+uses the **previous** session's file; new listings from the current session are
+classified the next day. That is fine for classification (it changes slowly) and
+keeps the run out of market hours. The 04:00 CM ingest has already created that
+file's `Instrument` rows hours earlier. The **first full pass is ~3–4 h**
+(~3,700 ISINs at 3 s); later runs only look up new listings and are quick. NSE
+answers with no `secInfo` are stored as `not_found` and not retried (unless
+`--retry-not-found`); transient errors and ISIN mismatches leave no row, make the
+run exit 1, and are retried by the next run.
+
 ### Historical note: F&O cron typo (fixed 2026-10-10)
 
 The F&O cron previously invoked `ingest_fo_bhavcopy`, which is **not a valid
@@ -419,6 +442,10 @@ the cron line (see [Recommended hardening](#recommended-hardening)).
    ```bash
    env/bin/python manage.py migrate
    ```
+
+   **Warning:** on Django 6.1 every migration (DDL *or* data-only) ends with a
+   bare `PRAGMA foreign_key_check`, i.e. a full scan of this 5.3 GB DB. See
+   [Known drift / gotchas](#known-drift--gotchas) before running this on prod.
 
 6. Smoke-test the commands (read-only where possible):
 
@@ -534,6 +561,15 @@ tail -f /home/swapnil/apps/fin-api-data-pipeline/logs/pipeline.log
 - **`requirements.txt` is pinned** (`django==6.1.1`, `jugaad-data==0.35.10`,
   `python-dotenv==1.2.3`). Production runs Python 3.14; keep the dev venv on the
   same Python and pinned versions so migrations stay in sync.
+- **TODO: full-DB FK check on every `migrate` (Django 6.1 SQLite).**
+  `DatabaseSchemaEditor.__exit__` calls `check_constraints()`, which runs a bare
+  `PRAGMA foreign_key_check` over the whole database for *every* migration, even
+  a data-only `RunPython` one. On 2026-11-11 the `securityinfo.0005` deploy sat
+  in this scan at ~200 KB/s (hours). Worked around by applying the `sqlmigrate`
+  SQL by hand, then `migrate securityinfo 0005 --fake`. TODO: add an env-gated
+  override of `DatabaseWrapper.check_constraints` (or a small migrate wrapper)
+  so a normal `migrate` does not scan every row; keep the full check as an
+  explicit maintenance-window command.
 - **`settings.py` has `DEBUG=True`** and a hard-coded `SECRET_KEY`/`ALLOWED_HOSTS`.
   Acceptable only because no web surface of this project is exposed; do not
   expose the admin without hardening.

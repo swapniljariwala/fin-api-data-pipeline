@@ -28,3 +28,6 @@ series)` (the DB cannot: prices store no symbol and the symbol map has no "curre
 The ISIN in NSE's answer must equal the bhavcopy ISIN, else the row is skipped. `not_found`
 rows are not retried unless `--retry-not-found`. Bhavcopy includes bonds/debt, whose issuer
 industry NSE also returns, so ~3,700 ISINs are looked up on the first run (~3 h at 3 s).
+In production it is scheduled daily at 16:00 IST, after market close (it uses the most
+recently published UDiFF bhavcopy, so the previous session's file); see
+[`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md#stock-industry-classification).
