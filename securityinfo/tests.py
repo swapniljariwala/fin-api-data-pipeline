@@ -4,6 +4,7 @@ from unittest import mock
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import OperationalError
 from django.test import TestCase
 
 from securityinfo.management.commands import ingest_stock_classification as cmd
@@ -100,3 +101,44 @@ class StockClassificationTests(TestCase):
         self.assertEqual(len(self.run_cmd(quotes, dry_run=True)), 0)
         self.assertEqual(self.run_cmd(quotes, symbol="bbb"), [("BBB", "EQ")])
         self.assertEqual(len(self.run_cmd(quotes, limit=1)), 1)
+
+    def test_database_lock_is_retried(self):
+        quotes = {"AAA": _quote("INE001"), "BBB": _quote("INE002"),
+                  "CCC": _quote("INE003")}
+        real = InstrumentClassification.objects.update_or_create
+        attempts = {"n": 0}
+
+        def flaky(**kwargs):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise OperationalError("database is locked")
+            return real(**kwargs)
+
+        with mock.patch.object(
+                InstrumentClassification.objects, "update_or_create",
+                side_effect=flaky), mock.patch.object(cmd.time, "sleep"):
+            self.run_cmd(quotes, retries=2)
+        self.assertEqual(attempts["n"], 4)  # first write retried, then all 3
+        self.assertEqual(InstrumentClassification.objects.count(), 3)
+
+    def test_database_lock_exhaustion_leaves_instrument_for_retry(self):
+        quotes = {"AAA": _quote("INE001"), "BBB": _quote("INE002"),
+                  "CCC": _quote("INE003")}
+        real = InstrumentClassification.objects.update_or_create
+
+        def locked_for_aaa(**kwargs):
+            if kwargs["instrument"].isin == "INE001":
+                raise OperationalError("database is locked")
+            return real(**kwargs)
+
+        with (
+            mock.patch.object(
+                InstrumentClassification.objects, "update_or_create",
+                side_effect=locked_for_aaa),
+            mock.patch.object(cmd.time, "sleep"),
+        ):
+            with self.assertRaises(CommandError):
+                self.run_cmd(quotes, retries=1)
+        self.assertFalse(
+            InstrumentClassification.objects.filter(instrument__isin="INE001").exists())
+        self.assertEqual(InstrumentClassification.objects.count(), 2)

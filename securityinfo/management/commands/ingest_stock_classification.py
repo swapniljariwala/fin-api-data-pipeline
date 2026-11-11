@@ -38,7 +38,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.utils import timezone
 
 from corporateactions.management.commands.ingest_corporate_actions import (
@@ -291,15 +291,44 @@ class Command(BaseCommand):
                 return "mismatch"
             if any(found.values()):
                 labels, status = found, InstrumentClassification.STATUS_OK
-        with transaction.atomic():
-            InstrumentClassification.objects.update_or_create(
-                instrument=instrument,
-                defaults={
-                    **labels,
-                    "symbol_used": symbol,
-                    "status": status,
-                    "fetched_at": timezone.now(),
-                },
+        if not self._save(instrument, symbol, labels, status):
+            logger.error(
+                "%s: database still locked after %d attempts",
+                symbol, self.retries,
             )
+            return "failed"
         logger.info("%s (%s): %s %s", symbol, instrument.isin, status, labels["basic_industry"] or "")
         return "ok" if status == InstrumentClassification.STATUS_OK else "not_found"
+
+    def _save(self, instrument, symbol, labels, status):
+        """Write one row, retrying transient SQLite lock errors.
+
+        The corporate-announcements job writes every minute, and a read-then-
+        write upsert inside ``atomic`` can hit ``SQLITE_BUSY_SNAPSHOT`` (which
+        bypasses ``busy_timeout``). Back off and retry; each instrument is
+        independent, so the caller skips it after the last attempt and a re-run
+        picks it up.
+        """
+        for attempt in range(1, self.retries + 1):
+            try:
+                with transaction.atomic():
+                    InstrumentClassification.objects.update_or_create(
+                        instrument=instrument,
+                        defaults={
+                            **labels,
+                            "symbol_used": symbol,
+                            "status": status,
+                            "fetched_at": timezone.now(),
+                        },
+                    )
+                return True
+            except OperationalError:
+                logger.warning(
+                    "%s: database locked (attempt %d/%d)",
+                    symbol,
+                    attempt,
+                    self.retries,
+                )
+                if attempt < self.retries:
+                    time.sleep(max(1.0, self.delay) * attempt)
+        return False
