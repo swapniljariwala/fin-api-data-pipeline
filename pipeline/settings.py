@@ -254,6 +254,16 @@ LOGGING = {
             "level": "INFO",
             "propagate": False,
         },
+        "shareholdingpattern": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "eventcalendar": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "mfnavhistory": {
             "handlers": ["console", "file"],
             "level": "INFO",
