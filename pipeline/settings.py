@@ -58,6 +58,8 @@ INSTALLED_APPS = [
     "corporateannouncements",
     "corporateactions",
     "integratedfilings",
+    "shareholdingpattern",
+    "eventcalendar",
     "mfnavhistory",
 ]
 

@@ -112,6 +112,35 @@ Rows are idempotent on `(scheme, nav_date)`; scheme attributes are updated
 latest-wins as newer rows are seen. See `spec/schema.md` §3.10–3.11 for the
 schema.
 
+## Ingest shareholding patterns
+
+`ingest_shareholding_pattern` records NSE shareholding-pattern filings;
+`extract_shareholding_pattern` downloads each filing's XBRL, parses it with
+`jugaad-xbrl`'s `parse_shareholding()` and uploads the raw XML plus one JSON
+document to `$GCS_SHAREHOLDING_PATTERN_BUCKET` (or `--bucket` / `--local-dir`).
+
+```bash
+python manage.py ingest_shareholding_pattern --days 30
+python manage.py extract_shareholding_pattern --local-dir /tmp/shp --limit 5
+```
+
+Rows are idempotent on NSE's `recordId`; revisions are separate rows. See
+[`shareholdingpattern/AGENTS.md`](shareholdingpattern/AGENTS.md).
+
+## Ingest event calendar
+
+`ingest_event_calendar` records NSE board-meeting / event-calendar entries.
+`--latest` (default) covers the last 3 days through the next 30 days, so
+upcoming board meetings are captured.
+
+```bash
+python manage.py ingest_event_calendar
+python manage.py ingest_event_calendar --symbol TCS --from 2026-01-01 --to 2026-12-31
+```
+
+NSE gives these records no ID, so rows are idempotent on a deterministic hash of
+the stable fields. See [`eventcalendar/AGENTS.md`](eventcalendar/AGENTS.md).
+
 ## Logging
 
 - App loggers (INFO) write to both the console and `logs/pipeline.log`.

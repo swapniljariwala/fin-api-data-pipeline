@@ -21,6 +21,9 @@ Current state:
   daily OHLC/OI), `indexpricehistory` (index daily OHLC), and
   `corporateannouncements` (NSE corporate announcements feed) — plus the
   `mfnavhistory` app (AMFI mutual fund NAV history).
+- New live-feed apps: `shareholdingpattern` (NSE shareholding-pattern filings,
+  list + XBRL parsing to GCS) and `eventcalendar` (NSE board-meeting / event
+  calendar).
 - Working `ingest_bhavcopy` management command: downloads NSE CM bhavcopies and
   ingests them into `cm_price_history`. Idempotent and restart-safe; see
   [CLI reference](#cli-reference) below.
@@ -79,6 +82,8 @@ Two production gotchas are called out there:
 | [`corporateannouncements/`](corporateannouncements/AGENTS.md) | Django app: NSE corporate announcements feed | [AGENTS.md](corporateannouncements/AGENTS.md) |
 | [`corporateactions/`](corporateactions/AGENTS.md) | Django app: NSE corporate actions (dividend/split/bonus/...) | [AGENTS.md](corporateactions/AGENTS.md) |
 | [`integratedfilings/`](integratedfilings/AGENTS.md) | Django app: NSE Integrated Filing releases (list) + XBRL statement extraction to GCS | [AGENTS.md](integratedfilings/AGENTS.md) |
+| [`shareholdingpattern/`](shareholdingpattern/AGENTS.md) | Django app: NSE shareholding-pattern filings (list) + XBRL parsing to GCS | [AGENTS.md](shareholdingpattern/AGENTS.md) |
+| [`eventcalendar/`](eventcalendar/AGENTS.md) | Django app: NSE board-meeting / event calendar feed | [AGENTS.md](eventcalendar/AGENTS.md) |
 | [`mfnavhistory/`](mfnavhistory/AGENTS.md) | Django app: AMFI mutual fund NAV history | [AGENTS.md](mfnavhistory/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
@@ -381,6 +386,74 @@ them in `integrated_filing_statements`, one folder per release (`.../{basis}/{se
 python manage.py extract_integrated_filings --local-dir /tmp/out --limit 5     # try locally
 python manage.py extract_integrated_filings                                    # to the bucket
 python manage.py extract_integrated_filings --seq-id 211600                    # redo one
+```
+
+### Shareholding pattern ingest
+
+```
+python manage.py ingest_shareholding_pattern [--latest | --from YYYY-MM-DD | --days N]
+                                             [--to YYYY-MM-DD] [--lookback N]
+                                             [--symbol SYM] [--segment equities|sme]
+                                             [--delay SECONDS] [--retries N]
+```
+
+Live NSE API (`NSELive.shareholding_pattern`), no `--data-dir`. Rows land in
+`shareholding_patterns` keyed on NSE's `recordId`; revisions are separate rows.
+Idempotent (`ignore_conflicts`), a failed API call is retried then raises
+`CommandError`. Details in [`shareholdingpattern/AGENTS.md`](shareholdingpattern/AGENTS.md).
+
+```bash
+python manage.py ingest_shareholding_pattern                     # last 3 days
+python manage.py ingest_shareholding_pattern --days 30
+python manage.py ingest_shareholding_pattern --symbol TCS --from 2026-10-01
+```
+
+### Shareholding pattern extraction
+
+```
+python manage.py extract_shareholding_pattern [--bucket NAME | --local-dir PATH]
+                                             [--limit N] [--record-id N] [--symbol SYM]
+                                             [--max-attempts N] [--delay SECONDS] [--timeout SECONDS]
+                                             [--retry-missing] [--rebuild]
+```
+
+Downloads each pending filing's XBRL, parses it with `jugaad-xbrl` 0.6.0's
+`parse_shareholding()`, and uploads the raw XML plus one JSON document to the bucket
+named by `$GCS_SHAREHOLDING_PATTERN_BUCKET` (or `--bucket`; `--local-dir` for testing):
+
+```
+shareholding/{symbol}/{YYYY-MM-DD}/{record_id}.xml
+shareholding/{symbol}/{YYYY-MM-DD}/{record_id}.json
+```
+
+Status flow and `--rebuild`/`--retry-missing` work like integrated filings. See
+[`shareholdingpattern/AGENTS.md`](shareholdingpattern/AGENTS.md#extraction).
+
+```bash
+python manage.py extract_shareholding_pattern --local-dir /tmp/out --limit 5
+python manage.py extract_shareholding_pattern --record-id 216349
+```
+
+### Event calendar ingest
+
+```
+python manage.py ingest_event_calendar [--latest | --from YYYY-MM-DD | --days N]
+                                       [--to YYYY-MM-DD] [--lookback N] [--ahead N]
+                                       [--symbol SYM] [--segment equities|sme]
+                                       [--delay SECONDS] [--retries N]
+```
+
+Live NSE API (`NSELive.event_calendar`); no `--data-dir`. `--latest` (default) covers
+`--lookback` days back through `--ahead` days forward, so upcoming board meetings are
+recorded. NSE gives no ID, so rows are keyed on a deterministic hash of
+`(segment, symbol, event_date, purpose, description)` and inserted idempotently.
+Equity and SME records are normalized into `event_calendar`; unknown symbols get an
+ISIN-less `Instrument`. Details in [`eventcalendar/AGENTS.md`](eventcalendar/AGENTS.md).
+
+```bash
+python manage.py ingest_event_calendar                      # last 3 + next 30 days
+python manage.py ingest_event_calendar --days 90
+python manage.py ingest_event_calendar --symbol TCS --from 2026-01-01 --to 2026-12-31
 ```
 
 ### Stock industry classification

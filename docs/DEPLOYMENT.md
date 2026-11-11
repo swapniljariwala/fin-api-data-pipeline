@@ -256,6 +256,25 @@ env/bin/python manage.py ingest_integrated_filings --from 2026-10-01 --to 2026-1
 The bucket has no object versioning (soft delete keeps removed or overwritten objects 7
 days). Do not run migrations or heavy backfills during 05:30-05:45 IST.
 
+### Shareholding patterns and event calendar
+
+Not scheduled yet (added 2026-11-11). The commands follow the same live-feed patterns as
+integrated filings and announcements:
+
+```bash
+# list ingest (then the extraction cron/run drains pending rows)
+env/bin/python manage.py ingest_shareholding_pattern --latest --lookback 3
+env/bin/python manage.py extract_shareholding_pattern --limit 200
+
+# board-meeting / event calendar (last 3 days through the next 30)
+env/bin/python manage.py ingest_event_calendar --latest
+```
+
+Shareholding extraction needs its own bucket variable in the server's `.env`:
+`GCS_SHAREHOLDING_PATTERN_BUCKET` (same credentials as above). Bucket layout and the
+pending/done/failed status flow: [`shareholdingpattern/AGENTS.md`](../shareholdingpattern/AGENTS.md).
+Details for the event feed: [`eventcalendar/AGENTS.md`](../eventcalendar/AGENTS.md).
+
 ### Corporate actions
 
 NSE's corporate-actions feed is a **live API filtered by ex-date** (not a dated
