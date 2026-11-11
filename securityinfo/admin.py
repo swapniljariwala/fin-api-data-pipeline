@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from .models import Instrument, NSESymbolInstrumentMap, NSESymbols, Series
+from .models import (
+    Instrument,
+    InstrumentClassification,
+    NSESymbolInstrumentMap,
+    NSESymbols,
+    Series,
+)
 
 
 @admin.register(Series)
@@ -36,3 +42,11 @@ class NSESymbolsAdmin(admin.ModelAdmin):
     list_display = ["symbol"]
     search_fields = ["symbol"]
     inlines = [InstrumentInline]
+
+
+@admin.register(InstrumentClassification)
+class InstrumentClassificationAdmin(admin.ModelAdmin):
+    list_display = ["instrument", "symbol_used", "macro", "sector", "industry", "basic_industry", "status"]
+    list_filter = ["status", "macro", "sector"]
+    search_fields = ["instrument__isin", "instrument__name", "symbol_used"]
+    raw_id_fields = ["instrument"]

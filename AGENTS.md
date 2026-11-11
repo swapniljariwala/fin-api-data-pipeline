@@ -383,6 +383,22 @@ python manage.py extract_integrated_filings                                    #
 python manage.py extract_integrated_filings --seq-id 211600                    # redo one
 ```
 
+### Stock industry classification
+
+```
+python manage.py ingest_stock_classification [--file PATH | --date YYYY-MM-DD] [--lookback N]
+                                             [--symbol SYM] [--limit N] [--retry-not-found]
+                                             [--dry-run] [--delay SECONDS] [--retries N]
+                                             [--timeout SECONDS]
+```
+
+Downloads a recent UDiFF CM bhavcopy (to a temp dir) for the `(ISIN, symbol, series)` pairs,
+then calls the live NSE quote (`--delay` 3 s apart) only for instruments with no row in
+`instrument_classification`, storing macro/sector/industry/basic industry. Run after the
+bhavcopy ingest (daily or weekly; after the first full run each run is only new listings).
+Outcomes `ok` / `not_found` are stored; transient errors and ISIN mismatches leave no row and
+make the run exit 1. Details in [`securityinfo/AGENTS.md`](securityinfo/AGENTS.md#industry-classification).
+
 ### Mutual fund NAV ingest
 
 ```
