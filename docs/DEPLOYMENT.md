@@ -115,9 +115,10 @@ published by AMFI the same evening, so it is fetched **once daily** at 09:30
 IST, after the bhavcopy window. Stock industry classification runs daily at
 **16:00 IST**, after market close; NSE publishes the day's bhavcopy later in the
 evening, so this run uses the previous session's file (new listings are picked
-up the next day). Every job is wrapped in `flock` and appends to
-`logs/cron.log` (changed 2026-11-07; previously the bhavcopy jobs ran bare and
-all fired on the same minute):
+up the next day). Shareholding patterns are ingested and extracted **once daily
+at 21:30 IST**; the event calendar is polled **hourly at :17**. Every job is
+wrapped in `flock` and appends to `logs/cron.log` (changed 2026-11-07; previously
+the bhavcopy jobs ran bare and all fired on the same minute):
 
 ```
 CRON_TZ=Asia/Kolkata
@@ -127,6 +128,10 @@ CRON_TZ=Asia/Kolkata
 9,24,39,54 4-8 * * * flock -n /tmp/ingest_delivery_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_delivery_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
 # Stock industry classification: after market close; uses the latest published UDiFF bhavcopy (previous session)
 0 16 * * * flock -n /tmp/ingest_stock_classification.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_stock_classification >> logs/cron.log 2>&1"
+# Shareholding patterns: NSE filings, daily late evening; ingest then drain XBRL extraction to GCS
+30 21 * * * flock -n /tmp/shareholding_pattern.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_shareholding_pattern --latest --lookback 7 >> logs/cron.log 2>&1; env/bin/python manage.py extract_shareholding_pattern --limit 1000 >> logs/cron.log 2>&1"
+# Event calendar: NSE board-meeting / event feed, hourly
+17 * * * * flock -n /tmp/ingest_event_calendar.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_event_calendar --latest >> logs/cron.log 2>&1"
 # Corporate announcements: live feed, poll every minute (lookback 1 = today only)
 * * * * * flock -n /tmp/ingest_corporate_announcements.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_announcements --latest --lookback 1 >> logs/cron.log 2>&1"
 # Mutual fund NAV: AMFI publishes the session's report the same evening; run after the bhavcopy window
@@ -161,6 +166,9 @@ responsive. Run migrations and other heavy DB work outside 05:30–05:45.
 | Integrated filings (extraction) | `extract_integrated_filings` (same job, right after the list ingest) | `integrated_filing_statements`, GCS bucket |
 | Integrated filings (weekly retry) | `extract_integrated_filings --retry-missing` (Sun 11:12 IST): re-tries filings NSE did not serve | `integrated_filings`, GCS bucket |
 | Corporate actions | `ingest_corporate_actions --latest` (daily 09:12 IST, scheduled 2026-11-08, see [Corporate actions](#corporate-actions)) | `corporate_actions`, `corporate_action_legs` |
+| Shareholding patterns (list) | `ingest_shareholding_pattern --latest --lookback 7` (daily 21:30 IST) | `shareholding_patterns` |
+| Shareholding patterns (extraction) | `extract_shareholding_pattern --limit 1000` (same job, right after the list ingest) | `shareholding_patterns`, GCS bucket |
+| Event calendar | `ingest_event_calendar --latest` (hourly at :17) | `event_calendar` |
 
 Notes:
 
@@ -258,13 +266,15 @@ days). Do not run migrations or heavy backfills during 05:30-05:45 IST.
 
 ### Shareholding patterns and event calendar
 
-Not scheduled yet (added 2026-11-11). The commands follow the same live-feed patterns as
-integrated filings and announcements:
+Scheduled since 2026-11-11. Shareholding patterns run daily at **21:30 IST** (late evening):
+the list ingest uses a 7-day lookback, then extraction drains up to 1,000 pending filings to
+GCS in the same `flock`-wrapped job. The event calendar runs **hourly at :17** with the default
+lookback/ahead window (3 days back, 30 days ahead).
 
 ```bash
 # list ingest (then the extraction cron/run drains pending rows)
-env/bin/python manage.py ingest_shareholding_pattern --latest --lookback 3
-env/bin/python manage.py extract_shareholding_pattern --limit 200
+env/bin/python manage.py ingest_shareholding_pattern --latest --lookback 7
+env/bin/python manage.py extract_shareholding_pattern --limit 1000
 
 # board-meeting / event calendar (last 3 days through the next 30)
 env/bin/python manage.py ingest_event_calendar --latest

@@ -76,9 +76,14 @@ shareholding/{symbol}/{YYYY-MM-DD}/{record_id}.json    parse_shareholding(...).t
 - `jugaad-xbrl >= 0.6.0` is required for `parse_shareholding()`; `parse()` is for NSE
   integrated financial results and deliberately rejects SHP documents.
 
+## Schedule
+
+Cron on `finapi` runs daily at **21:30 IST** (`flock`-wrapped): list ingest with
+`--latest --lookback 7`, then `extract_shareholding_pattern --limit 1000`, both
+appending to `logs/cron.log`. See
+[`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md#scheduled-jobs-cron).
+
 ## TODO
 
-- No cron entry yet. Suggested: ingest every 15 minutes in the corporate-filings
-  window, then extract in the same `flock`-wrapped job.
 - Decide whether to also upload `to_yaml()` for human readers; JSON is the only parsed
   object today.

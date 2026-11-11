@@ -55,8 +55,12 @@ Guarantees:
   ISIN-less `Instrument` named after the symbol (same fallback as announcements and
   integrated filings).
 
+## Schedule
+
+Cron on `finapi` runs hourly at **:17** (`flock`-wrapped) with
+`ingest_event_calendar --latest`, appending to `logs/cron.log`. See
+[`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md#scheduled-jobs-cron).
+
 ## TODO
 
-- No cron entry yet. A daily/weekly run is enough; the feed changes slowly compared
-  with announcements.
 - If NSE ever adds an ID, key on it and keep `record_key` as a fallback.
