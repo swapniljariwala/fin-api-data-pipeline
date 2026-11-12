@@ -104,32 +104,33 @@ env/bin/pip install -r requirements.txt
 
 Schedule lives in **user `swapnil`'s crontab** (`crontab -l`), not systemd. It
 uses `CRON_TZ=Asia/Kolkata`. The four bhavcopy jobs run every 15 minutes during
-the 04:00–08:59 IST window (after NSE publishes the previous session's files),
-with a 5-day lookback so missed runs self-heal. They are **spaced 3 minutes
+the 16:00–20:59 IST window (evening; moved from 04:00–08:59 on 2026-11-12, so runs
+before NSE publishes the day's files are harmless no-ops), with a 5-day lookback so missed runs self-heal. They are **spaced 3 minutes
 apart in priority order** (stock, index, F&O, delivery) so they do not all start
 on the same minute and fight over the SQLite write lock on the slow disc;
 delivery goes last because it needs that date's CM bhavcopy already ingested.
 The corporate-announcements feed is **live** and can update at any second, so
 it is polled **every minute**. The mutual-fund NAV report for a session is
 published by AMFI the same evening, so it is fetched **once daily** at 09:30
-IST, after the bhavcopy window. Stock industry classification runs daily at
-**16:00 IST**, after market close; NSE publishes the day's bhavcopy later in the
-evening, so this run uses the previous session's file (new listings are picked
-up the next day). Shareholding patterns are ingested and extracted **once daily
+IST (it covers the previous evening's report). Stock industry classification runs daily at
+**21:00 IST**, after the evening bhavcopy window, so it uses the same day's file
+(moved from 16:00 on 2026-11-12 because that collided with the first bhavcopy run). Shareholding patterns are ingested and extracted **once daily
 at 21:30 IST**; the event calendar is polled **hourly at :17**. Every job is
 wrapped in `flock` and appends to `logs/cron.log` (changed 2026-11-07; previously
 the bhavcopy jobs ran bare and all fired on the same minute):
 
 ```
 CRON_TZ=Asia/Kolkata
-0,15,30,45 4-8 * * * flock -n /tmp/ingest_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
-3,18,33,48 4-8 * * * flock -n /tmp/ingest_index_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_index_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
-6,21,36,51 4-8 * * * flock -n /tmp/ingest_fno_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_fno_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
-9,24,39,54 4-8 * * * flock -n /tmp/ingest_delivery_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_delivery_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
-# Stock industry classification: after market close; uses the latest published UDiFF bhavcopy (previous session)
-0 16 * * * flock -n /tmp/ingest_stock_classification.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_stock_classification >> logs/cron.log 2>&1"
+0,15,30,45 16-20 * * * flock -n /tmp/ingest_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
+3,18,33,48 16-20 * * * flock -n /tmp/ingest_index_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_index_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
+6,21,36,51 16-20 * * * flock -n /tmp/ingest_fno_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_fno_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
+9,24,39,54 16-20 * * * flock -n /tmp/ingest_delivery_bhavcopy.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_delivery_bhavcopy --latest --lookback 5 >> logs/cron.log 2>&1"
+# Stock industry classification: after the evening bhavcopy window; uses the latest published UDiFF bhavcopy
+0 21 * * * flock -n /tmp/ingest_stock_classification.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_stock_classification >> logs/cron.log 2>&1"
 # Shareholding patterns: NSE filings, daily late evening; ingest then drain XBRL extraction to GCS
 30 21 * * * flock -n /tmp/shareholding_pattern.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_shareholding_pattern --latest --lookback 7 >> logs/cron.log 2>&1; env/bin/python manage.py extract_shareholding_pattern --limit 1000 >> logs/cron.log 2>&1"
+# Screener snapshot: after the 21:12 corporate-actions job (adjustments rebuilt), before the 21:30 shareholding job
+20 21 * * * flock -n /tmp/build_screener_snapshot.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py build_screener_snapshot >> logs/cron.log 2>&1"
 # Event calendar: NSE board-meeting / event feed, hourly
 17 * * * * flock -n /tmp/ingest_event_calendar.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_event_calendar --latest >> logs/cron.log 2>&1"
 # Corporate announcements: live feed, poll every minute (lookback 1 = today only)
@@ -143,7 +144,7 @@ CRON_TZ=Asia/Kolkata
 # Integrated filings: weekly re-try of filings NSE did not serve (404 / empty file); waits for the lock instead of skipping
 12 11 * * 0 flock -w 1800 /tmp/integrated_filings.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py extract_integrated_filings --retry-missing >> logs/cron.log 2>&1"
 # Corporate actions: live NSE feed by ex-date, daily after the bhavcopy window so ex-date price checks see fresh closes
-12 9 * * * flock -n /tmp/ingest_corporate_actions.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_actions --latest >> logs/cron.log 2>&1"
+12 21 * * * flock -n /tmp/ingest_corporate_actions.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_corporate_actions --latest >> logs/cron.log 2>&1"
 # Rotate logs/cron.log weekly (Sun 03:30 IST): rename, wait for in-flight appends, gzip, drop archives older than 28 days
 30 3 * * 0 bash -c "cd /home/swapnil/apps/fin-api-data-pipeline/logs && d=\$(date +\%F) && [ -s cron.log ] && mv cron.log cron.log.\$d && sleep 75 && gzip -f cron.log.\$d && find . -maxdepth 1 -name 'cron.log.*.gz' -mtime +28 -delete"
 ```
@@ -159,16 +160,17 @@ responsive. Run migrations and other heavy DB work outside 05:30–05:45.
 | CM delivery data | `ingest_delivery_bhavcopy --latest --lookback 5` (:09/:24/:39/:54, after `ingest_bhavcopy`, see [Delivery data](#delivery-data)) | `nse_cm_delivery` |
 | F&O daily prices | `ingest_fno_bhavcopy --latest --lookback 5` | `fno_price_history` |
 | Index prices | `ingest_index_bhavcopy --latest --lookback 5` | `index_price_history` |
-| Stock industry classification | `ingest_stock_classification` (daily 16:00 IST, after market close, see [Stock industry classification](#stock-industry-classification)) | `instrument_classification` |
+| Stock industry classification | `ingest_stock_classification` (daily 21:00 IST, after the bhavcopy window, see [Stock industry classification](#stock-industry-classification)) | `instrument_classification` |
 | Corporate announcements | `ingest_corporate_announcements --latest --lookback 1` (every minute) | `corporate_announcements` |
 | Mutual fund NAV | `ingest_mf_nav --latest --lookback 5` (daily 09:30 IST) | `mutual_fund_nav_history` |
 | Integrated filings (list) | `ingest_integrated_filings --latest --lookback 3` (every 15 min, :12/:27/:42/:57, see [Integrated filings](#integrated-filings)) | `integrated_filings` |
 | Integrated filings (extraction) | `extract_integrated_filings` (same job, right after the list ingest) | `integrated_filing_statements`, GCS bucket |
 | Integrated filings (weekly retry) | `extract_integrated_filings --retry-missing` (Sun 11:12 IST): re-tries filings NSE did not serve | `integrated_filings`, GCS bucket |
-| Corporate actions | `ingest_corporate_actions --latest` (daily 09:12 IST, scheduled 2026-11-08, see [Corporate actions](#corporate-actions)) | `corporate_actions`, `corporate_action_legs` |
+| Corporate actions | `ingest_corporate_actions --latest` (daily 21:12 IST, scheduled 2026-11-08, moved from 09:12 on 2026-11-12, see [Corporate actions](#corporate-actions)) | `corporate_actions`, `corporate_action_legs` |
 | Shareholding patterns (list) | `ingest_shareholding_pattern --latest --lookback 7` (daily 21:30 IST) | `shareholding_patterns` |
 | Shareholding patterns (extraction) | `extract_shareholding_pattern --limit 1000` (same job, right after the list ingest) | `shareholding_patterns`, GCS bucket |
 | Event calendar | `ingest_event_calendar --latest` (hourly at :17) | `event_calendar` |
+| Screener snapshot | `build_screener_snapshot` (daily 21:20 IST; **not yet installed in the live crontab**, run `migrate` first) | `screener_snapshot` |
 
 Notes:
 
@@ -312,8 +314,8 @@ Result on prod: 3,804 actions; 3,803 `auto`, 1 `needs_review` (QUINT, a
 both sides, e.g. a just-listed stock or an ex-date not yet traded; re-checked on
 later runs), 0 failed.
 
-**On cron since 2026-11-08**: daily at 09:12 IST (after the 04:00-08:59 bhavcopy window, before the 09:30
-mutual-fund NAV job), `flock`-wrapped, output to `logs/cron.log`. A first manual run on that day fetched
+**On cron since 2026-11-08**: daily at 21:12 IST (after the 16:00-20:59 bhavcopy window, before the 21:30
+shareholding job; was 09:12 until 2026-11-12), `flock`-wrapped, output to `logs/cron.log`. A first manual run on that day fetched
 103 records in 7 s. It had not been scheduled before, so ex-dates from 2 Nov were caught up by that run.
 
 Review queue and re-checks:
@@ -408,12 +410,12 @@ sqlite3 db/db.sqlite3 \
 (`macro`/`sector`/`industryInfo`/`basicIndustry`); NSE publishes no bulk file.
 `ingest_stock_classification` takes the ISIN/symbol/series triples from a recent
 UDiFF CM bhavcopy and calls `stock_quote` only for instruments without a row,
-`--delay` 3 s apart. It runs daily at **16:00 IST**, after market close. NSE
-publishes a session's bhavcopy later in the evening (~18:00), so the 16:00 run
-uses the **previous** session's file; new listings from the current session are
-classified the next day. That is fine for classification (it changes slowly) and
-keeps the run out of market hours. The 04:00 CM ingest has already created that
-file's `Instrument` rows hours earlier. The **first full pass is ~3–4 h**
+`--delay` 3 s apart. It runs daily at **21:00 IST** (moved from 16:00 on
+2026-11-12, when the bhavcopy ingests moved to 16:00-20:59). NSE publishes a
+session's bhavcopy in the evening (~18:00), so by 21:00 it normally uses the
+**same day's** file; if that is not out yet it falls back to the previous
+session's. The evening CM ingest has already created that file's `Instrument`
+rows. The **first full pass is ~3–4 h**
 (~3,700 ISINs at 3 s); later runs only look up new listings and are quick. NSE
 answers with no `secInfo` are stored as `not_found` and not retried (unless
 `--retry-not-found`); transient errors and ISIN mismatches leave no row, make the
@@ -567,7 +569,7 @@ tail -f /home/swapnil/apps/fin-api-data-pipeline/logs/pipeline.log
 - Wrap each cron entry so output and exit status are captured, e.g.
 
   ```
-  */15 4-8 * * * cd /home/swapnil/apps/fin-api-data-pipeline && \
+  */15 16-20 * * * cd /home/swapnil/apps/fin-api-data-pipeline && \
     env/bin/python manage.py ingest_fno_bhavcopy --latest --lookback 5 \
     >> logs/cron.log 2>&1
   ```

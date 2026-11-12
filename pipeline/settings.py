@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     "shareholdingpattern",
     "eventcalendar",
     "mfnavhistory",
+    "screener",
 ]
 
 MIDDLEWARE = [
@@ -265,6 +266,11 @@ LOGGING = {
             "propagate": False,
         },
         "mfnavhistory": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "screener": {
             "handlers": ["console", "file"],
             "level": "INFO",
             "propagate": False,

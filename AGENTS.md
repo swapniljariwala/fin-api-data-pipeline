@@ -56,7 +56,7 @@ procedures, local DB sync for testing, logs, and known issues — is in
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Read it before touching production.
 
 Cron schedule (prod): the four bhavcopy ingests (CM, index, F&O, delivery) every
-15 min in the 04:00–08:59 IST window, spaced 3 min apart in that priority order
+15 min in the 16:00–20:59 IST window (evening, moved from 04:00–08:59 on 2026-11-12), spaced 3 min apart in that priority order
 (:00/:03/:06/:09 of each quarter hour),
 `ingest_corporate_announcements --latest --lookback 1` (a live feed) **every
 minute**, `ingest_mf_nav --latest --lookback 5` **once daily** at 09:30 IST,
@@ -85,6 +85,7 @@ Two production gotchas are called out there:
 | [`integratedfilings/`](integratedfilings/AGENTS.md) | Django app: NSE Integrated Filing releases (list) + XBRL statement extraction to GCS | [AGENTS.md](integratedfilings/AGENTS.md) |
 | [`shareholdingpattern/`](shareholdingpattern/AGENTS.md) | Django app: NSE shareholding-pattern filings (list) + XBRL parsing to GCS | [AGENTS.md](shareholdingpattern/AGENTS.md) |
 | [`eventcalendar/`](eventcalendar/AGENTS.md) | Django app: NSE board-meeting / event calendar feed | [AGENTS.md](eventcalendar/AGENTS.md) |
+| [`screener/`](screener/AGENTS.md) | Django app: latest price/volume screener snapshot (one row per stock) | [AGENTS.md](screener/AGENTS.md) |
 | [`mfnavhistory/`](mfnavhistory/AGENTS.md) | Django app: AMFI mutual fund NAV history | [AGENTS.md](mfnavhistory/AGENTS.md) |
 | [`securityinfo/`](securityinfo/AGENTS.md) | Django app: security/instrument master | [AGENTS.md](securityinfo/AGENTS.md) |
 | [`spec/`](spec/AGENTS.md) | Design docs: DB schema + bhavcopy formats | [AGENTS.md](spec/AGENTS.md) |
@@ -472,6 +473,17 @@ then calls the live NSE quote (`--delay` 3 s apart) only for instruments with no
 bhavcopy ingest (daily or weekly; after the first full run each run is only new listings).
 Outcomes `ok` / `not_found` are stored; transient errors and ISIN mismatches leave no row and
 make the run exit 1. Details in [`securityinfo/AGENTS.md`](securityinfo/AGENTS.md#industry-classification).
+
+### Screener snapshot
+
+```
+python manage.py build_screener_snapshot [--dry-run] [--full]
+```
+
+Rebuilds `screener_snapshot` (one row per active stock: latest close/volume, 52-week
+high/low, returns, volume averages, SMAs, delivery) from split/bonus-adjusted prices. Writes
+only rows that changed (a second run writes 0); `--dry-run` previews, `--full` rewrites all.
+Run after `rebuild_price_adjustments`. Details in [`screener/AGENTS.md`](screener/AGENTS.md).
 
 ### Mutual fund NAV ingest
 
