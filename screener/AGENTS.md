@@ -42,5 +42,6 @@ Design record: [`spec/TODO-screener-snapshot.md`](../spec/TODO-screener-snapshot
 
 ## Cron
 
-Daily after the evening ingest and after the 21:12 corporate-actions job (which rebuilds the
-adjustments), before the 21:30 shareholding job; see `docs/DEPLOYMENT.md`.
+Daily at 02:00 IST (installed 2026-11-13): after the 21:12 corporate-actions job, clear of the
+evening price ingests, the Sun 03:30 log rotation and the 05:30 Litestream snapshot. A full run
+reads ~3M rows and took ~31 min on prod with a cold cache (disk-bound); see `docs/DEPLOYMENT.md`.

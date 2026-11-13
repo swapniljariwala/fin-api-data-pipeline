@@ -129,8 +129,8 @@ CRON_TZ=Asia/Kolkata
 0 21 * * * flock -n /tmp/ingest_stock_classification.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_stock_classification >> logs/cron.log 2>&1"
 # Shareholding patterns: NSE filings, daily late evening; ingest then drain XBRL extraction to GCS
 30 21 * * * flock -n /tmp/shareholding_pattern.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_shareholding_pattern --latest --lookback 7 >> logs/cron.log 2>&1; env/bin/python manage.py extract_shareholding_pattern --limit 1000 >> logs/cron.log 2>&1"
-# Screener snapshot: after the 21:12 corporate-actions job (adjustments rebuilt), before the 21:30 shareholding job
-20 21 * * * flock -n /tmp/build_screener_snapshot.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py build_screener_snapshot >> logs/cron.log 2>&1"
+# Screener snapshot: nightly at 02:00 IST (quiet slot; ~30 min on a cold disk, reads ~3M rows). Installed 2026-11-13
+0 2 * * * flock -n /tmp/build_screener_snapshot.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && nice -n 10 env/bin/python manage.py build_screener_snapshot >> logs/cron.log 2>&1"
 # Event calendar: NSE board-meeting / event feed, hourly
 17 * * * * flock -n /tmp/ingest_event_calendar.lock bash -c "cd /home/swapnil/apps/fin-api-data-pipeline && env/bin/python manage.py ingest_event_calendar --latest >> logs/cron.log 2>&1"
 # Corporate announcements: live feed, poll every minute (lookback 1 = today only)
@@ -170,7 +170,7 @@ responsive. Run migrations and other heavy DB work outside 05:30–05:45.
 | Shareholding patterns (list) | `ingest_shareholding_pattern --latest --lookback 7` (daily 21:30 IST) | `shareholding_patterns` |
 | Shareholding patterns (extraction) | `extract_shareholding_pattern --limit 1000` (same job, right after the list ingest) | `shareholding_patterns`, GCS bucket |
 | Event calendar | `ingest_event_calendar --latest` (hourly at :17) | `event_calendar` |
-| Screener snapshot | `build_screener_snapshot` (daily 21:20 IST; **not yet installed in the live crontab**, run `migrate` first) | `screener_snapshot` |
+| Screener snapshot | `build_screener_snapshot` (daily 02:00 IST, installed 2026-11-13; table created by hand + `django_migrations` row because a plain `migrate` runs the full-DB FK scan) | `screener_snapshot` |
 
 Notes:
 
