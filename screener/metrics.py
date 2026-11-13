@@ -13,6 +13,11 @@ from typing import Optional
 # otherwise (data gaps, or history starting later) the return is NULL.
 RETURN_TOLERANCE_DAYS = 7
 
+# Returns whose lookback is beyond the main fetch window; their one reference
+# close each comes from a narrow separate query (``far_bars``), not 3-5 years
+# of daily rows.
+FAR_RETURN_MONTHS = {"ret_3y": 36, "ret_5y": 60}
+
 RETURN_LOOKBACKS = {
     "ret_1w": ("days", 7),
     "ret_1m": ("months", 1),
@@ -24,7 +29,9 @@ RETURN_LOOKBACKS = {
 }
 VOL_WINDOWS = {"avg_vol_10d": 10, "avg_vol_20d": 20, "avg_vol_50d": 50, "avg_vol_250d": 250}
 SMA_WINDOWS = {"sma_20": 20, "sma_50": 50, "sma_100": 100, "sma_200": 200}
-MAX_LOOKBACK_DAYS = 60 * 31 + 15  # enough calendar days for ret_5y
+# Calendar days of daily rows read per stock: covers the 52-week range, 250-row
+# averages, SMAs and returns up to 1y. ``trading_days_available`` is capped by it.
+MAIN_WINDOW_DAYS = 400
 
 
 @dataclass
@@ -71,13 +78,18 @@ def _window_mean(bars, n, attr):
     return _mean(values)
 
 
-def compute(bars):
-    """Metrics dict for the instrument's latest bar, or None when there are no bars."""
+def compute(bars, far_bars=()):
+    """Metrics dict for the instrument's latest bar, or None when there are no bars.
+
+    ``far_bars`` are older bars (before ``bars[0]``) used only to find the
+    reference close for the long returns; they never feed ranges or averages.
+    """
     if not bars:
         return None
     last = bars[-1]
     as_of = last.trade_date
-    dates = [b.trade_date for b in bars]
+    lookup = [*far_bars, *bars]
+    dates = [b.trade_date for b in lookup]
 
     out = {
         "as_of_date": as_of,
@@ -113,7 +125,7 @@ def compute(bars):
         if idx < 0 or (target - dates[idx]).days > RETURN_TOLERANCE_DAYS:
             out[name] = None
         else:
-            out[name] = _round(100 * (last.close / bars[idx].close - 1), 2)
+            out[name] = _round(100 * (last.close / lookup[idx].close - 1), 2)
 
     # Volume / turnover averages and SMAs
     for name, n in VOL_WINDOWS.items():

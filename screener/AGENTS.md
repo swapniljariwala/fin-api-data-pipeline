@@ -24,6 +24,12 @@ Design record: [`spec/TODO-screener-snapshot.md`](../spec/TODO-screener-snapshot
   Turnover and trade counts are raw. Run after `rebuild_price_adjustments`.
 - **Series.** One row per date: the EQ row when there is one, else the other series' row, so
   a stock moving EQ → BE/SM keeps one continuous history.
+- **Read window.** Each stock's daily rows are read for the last 400 calendar days only
+  (52-week range, 250-row averages, SMAs, returns up to 1y). `ret_3y`/`ret_5y` take their one
+  reference close from a narrow separate date-range query (`builder._far_bars`), so a full run
+  reads ~1.2M rows on prod instead of ~3M. Consequences: `trading_days_available` is capped
+  at the 400-day window (~270), and an N-row average/SMA is NULL if fewer than N rows exist
+  inside it (e.g. a long suspension).
 - **Active only.** Instruments whose newest price is more than 30 days older than the newest
   date in the database get no row (an existing row is deleted).
 - **52-week range** = intraday high/low over the available part of the last 365 days
@@ -36,7 +42,7 @@ Design record: [`spec/TODO-screener-snapshot.md`](../spec/TODO-screener-snapshot
   exists for the last 365 days).
 - **`adjustment_pending`** = a `needs_review` action that may rescale the price (split,
   bonus, consolidation, or undecoded) sits in the history window, so ranges/returns may be
-  distorted. Matched through the NSE symbol.
+  distorted. Matched through the NSE symbol, looking back to the 5y return reference date.
 - Idempotent: a second run writes 0 rows. Local DB copies can have sparse old history, which
   just makes `ret_3y`/`ret_5y` NULL.
 

@@ -80,6 +80,15 @@ class MetricsTests(SimpleTestCase):
         self.assertEqual(out["deliv_per"], 60.0)
         self.assertEqual(out["avg_deliv_per_20d"], 50.0)
 
+    def test_far_bars_feed_only_long_returns(self):
+        far = [_bar(date(2023, 10, 20), 50.0)]
+        bars = [_bar(d, 100.0) for d in _weekdays(30)]
+        out = metrics.compute(bars, far)
+        self.assertEqual(out["ret_3y"], 100.0)  # 100 vs 50
+        self.assertIsNone(out["ret_5y"])
+        self.assertEqual(out["trading_days_available"], 30)  # far bars not counted
+        self.assertEqual(out["sma_20"], 100.0)
+
     def test_subtract_months_clamps_day(self):
         self.assertEqual(metrics.subtract_months(date(2026, 3, 31), 1), date(2026, 2, 28))
         self.assertEqual(metrics.subtract_months(date(2026, 1, 15), 12), date(2025, 1, 15))
@@ -140,6 +149,24 @@ class BuilderTests(TestCase):
         self.assertEqual(snap.as_of_date, END)
         self.assertEqual(snap.close, 40.0)
         self.assertEqual(snap.trading_days_available, 15)
+
+    def test_long_returns_come_from_far_window_and_use_split_factor(self):
+        inst = self._instrument("LONG", "INE000000011")
+        self._prices(inst, [100.0] * 30)  # recent rows, ending END
+        far_day = metrics.subtract_months(END, 36) - timedelta(days=2)
+        s, _ = Series.objects.get_or_create(code="EQ", defaults={"description": "EQ"})
+        NSECmPriceHistory.objects.create(
+            instrument=inst, trade_date=far_day, series=s, high=500, low=500, close=500,
+            volume=10)
+        # 5:1 split since then: the old 500 is worth 100 on today's basis
+        PriceAdjustmentSegment.objects.create(
+            instrument=inst, valid_from=date(1900, 1, 1), valid_to=date(2024, 1, 1),
+            factor=Decimal("0.2"))
+        call_command("build_screener_snapshot", stdout=StringIO())
+        snap = ScreenerSnapshot.objects.get(pk=inst.pk)
+        self.assertAlmostEqual(snap.ret_3y, 0.0, places=2)
+        self.assertIsNone(snap.ret_5y)
+        self.assertEqual(snap.trading_days_available, 30)
 
     def test_new_listing_and_delisted(self):
         new = self._instrument("NEWCO", "INE000000004")

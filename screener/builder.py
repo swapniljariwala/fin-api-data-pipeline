@@ -45,6 +45,13 @@ WHERE p.instrument_id IN ({marks}) AND p.trade_date >= %s
 ORDER BY p.instrument_id, p.trade_date
 """
 
+# Same columns, selected by a narrow date range instead of an instrument list
+# (used for the long-return reference closes).
+_FAR_SQL = _SQL.replace(
+    "p.instrument_id IN ({marks}) AND p.trade_date >= %s",
+    "p.trade_date BETWEEN %s AND %s",
+)
+
 _FIELDS = [
     f.name
     for f in ScreenerSnapshot._meta.get_fields()
@@ -90,6 +97,32 @@ def _bars_for(rows):
     return bars
 
 
+def _far_bars(newest, active):
+    """``{instrument_id: [Bar, ...]}`` of rows near the 3y / 5y reference dates.
+
+    Each window ends at the target date for the newest day and reaches back far
+    enough to cover a stock whose latest price is up to ACTIVE_WITHIN_DAYS old,
+    plus the return tolerance. Windows are read by date, not per instrument.
+    """
+    active = set(active)
+    grouped = defaultdict(list)
+    for months in metrics.FAR_RETURN_MONTHS.values():
+        end = metrics.subtract_months(newest, months)
+        start = end - timedelta(days=ACTIVE_WITHIN_DAYS + metrics.RETURN_TOLERANCE_DAYS)
+        t = time.monotonic()
+        n = 0
+        with connection.cursor() as cur:
+            cur.execute(_FAR_SQL, [start.isoformat(), end.isoformat()])
+            for row in cur:
+                if row[0] in active:
+                    grouped[row[0]].append(row)
+                    n += 1
+        logger.info(
+            "stage 2/4 far window %s..%s: %d rows [%.2fs]", start, end, n, time.monotonic() - t
+        )
+    return {i: _bars_for(sorted(rows, key=lambda r: r[2])) for i, rows in grouped.items()}
+
+
 def _pending_flags(instrument_ids, window_start):
     """Instruments with an unapplied (needs_review) split/bonus in the window."""
     symbols = defaultdict(set)
@@ -116,7 +149,7 @@ def compute_all():
     newest = NSECmPriceHistory.objects.aggregate(m=Max("trade_date"))["m"]
     if newest is None:
         return {}
-    window_start = newest - timedelta(days=metrics.MAX_LOOKBACK_DAYS)
+    window_start = newest - timedelta(days=metrics.MAIN_WINDOW_DAYS)
     active = sorted(
         NSECmPriceHistory.objects.filter(
             trade_date__gte=newest - timedelta(days=ACTIVE_WITHIN_DAYS)
@@ -128,6 +161,7 @@ def compute_all():
         "stage 1/4 active instruments: %d (newest %s, window from %s) [%.2fs]",
         len(active), newest, window_start, time.monotonic() - t0,
     )
+    far = _far_bars(newest, active)
     result = {}
     totals = {"rows": 0, "sql": 0.0, "bars": 0.0, "compute": 0.0}
     n_chunks = (len(active) + READ_CHUNK - 1) // READ_CHUNK
@@ -148,7 +182,7 @@ def compute_all():
         t_bars = time.monotonic() - t
         t = time.monotonic()
         for inst_id, bars in all_bars.items():
-            values = metrics.compute(bars)
+            values = metrics.compute(bars, far.get(inst_id, ()))
             if values is not None:
                 result[inst_id] = values
         t_comp = time.monotonic() - t
@@ -166,7 +200,11 @@ def compute_all():
         totals["rows"], totals["sql"], totals["bars"], totals["compute"],
     )
     t = time.monotonic()
-    flagged = _pending_flags(list(result), window_start)
+    # needs_review actions back to the 5y return reference date can distort ret_5y
+    flag_start = metrics.subtract_months(newest, max(metrics.FAR_RETURN_MONTHS.values())) - timedelta(
+        days=ACTIVE_WITHIN_DAYS + metrics.RETURN_TOLERANCE_DAYS
+    )
+    flagged = _pending_flags(list(result), flag_start)
     logger.info(
         "stage 3/4 adjustment_pending flags: %d flagged [%.2fs]", len(flagged), time.monotonic() - t
     )
