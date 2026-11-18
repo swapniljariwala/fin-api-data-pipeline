@@ -215,7 +215,7 @@ filings/{symbol}/{fy}/{quarter}/{basis}/{seq_id}/_manifest.json        statement
   2. Done filings with no statement row in the per-release layout: same condition as the `REMAIN` query in
      `logs/rebuild_integrated_filings.sh` (expect 0).
   3. Every `integrated_filing_statements.object_path` exists in the bucket: dump the paths from the DB first, then
-     `gcloud storage ls -r "gs://bhav-marketsetup-db-replication/filings/**"` and compare (expect 0 missing).
+     `gcloud storage ls -r "gs://bhav-announcements-marketsetup/filings/**"` and compare (expect 0 missing).
   4. The "latest filing" query in this file returns one row per (instrument, period_end, consolidated).
   5. Count (do not delete yet) old-layout orphan objects: `filings/SYMBOL/FYxxxx/Qn/basis/file.json` with no seq folder.
   6. Watch for `database is locked` (36 log lines on 2026-11-08 with three writers); none of them failed a filing.

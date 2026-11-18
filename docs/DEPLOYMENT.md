@@ -244,8 +244,9 @@ Configuration lives in the server's `.env` (loaded by `settings.py`, git-ignored
 
 | Variable | Value |
 |---|---|
-| `GCS_INTEGRATED_FILINGS_BUCKET` | `bhav-marketsetup-db-replication` (the Litestream bucket; our objects use the `raw/` and `filings/` prefixes, which its lifecycle rule - it only deletes under `announcements/` - does not touch) |
-| `GOOGLE_APPLICATION_CREDENTIALS` | `/home/swapnil/service-account.json`, the same key Litestream and fin-api use (all run as `swapnil`; file mode `600` since 2026-11-08) |
+| `GCS_INTEGRATED_FILINGS_BUCKET` | `bhav-announcements-marketsetup` (new GCP account, since 2026-11-18; objects use the `raw/` and `filings/` prefixes) |
+| `GCS_SHAREHOLDING_PATTERN_BUCKET` | `bhav-announcements-marketsetup` (same bucket; objects use the `shareholding/` prefix) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | `/home/swapnil/bhav-gcs.json`, the new account's service-account key (same one fin-api uses; file mode `600`) |
 
 Operations:
 
@@ -282,8 +283,8 @@ env/bin/python manage.py extract_shareholding_pattern --limit 1000
 env/bin/python manage.py ingest_event_calendar --latest
 ```
 
-Shareholding extraction needs its own bucket variable in the server's `.env`:
-`GCS_SHAREHOLDING_PATTERN_BUCKET` (same credentials as above). Bucket layout and the
+Shareholding extraction uses its own bucket variable in the server's `.env`,
+`GCS_SHAREHOLDING_PATTERN_BUCKET` (table above; same credentials). Bucket layout and the
 pending/done/failed status flow: [`shareholdingpattern/AGENTS.md`](../shareholdingpattern/AGENTS.md).
 Details for the event feed: [`eventcalendar/AGENTS.md`](../eventcalendar/AGENTS.md).
 
